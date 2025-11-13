@@ -5,7 +5,7 @@ It implements a ROS 2–based perception → planning → control pipeline that 
 Development is done simulation-first (Gazebo/Ignition) and then transferred to the real rover for field testing.
 
 <p align="right">
-  <img src="Docs/Images/MarsRover.svg" alt="UdeGSpace logo" height="80">
+  <img src="Docs/Images/MarsRover.svg" alt="UdeGSpace logo" height="240">
 </p>
 
 ---
