@@ -1,12 +1,13 @@
-# Autonomous Navigation
+<p align="center">
+  <img src="Docs/Images/MarsRover.svg" alt="Mars Rover logo" height="300">
+</p>
+
+
+# Autonomous Navigation Mission
 
 This repository contains the **Autonomous Navigation Mission** stack for rover *Maya* in the University Rover Challenge 2026.  
 It implements a ROS 2–based perception → planning → control pipeline that uses LiDAR, ZED camera, GNSS, IMU and MCU telemetry to navigate up to 2 km, reach GNSS/visual/object targets within competition tolerances, and report status to operators.  
 Development is done simulation-first (Gazebo/Ignition) and then transferred to the real rover for field testing.
-
-<p align="right">
-  <img src="Docs/Images/MarsRover.svg" alt="UdeGSpace logo" height="240">
-</p>
 
 ---
 
