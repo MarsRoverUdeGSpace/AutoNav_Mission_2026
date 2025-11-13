@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Docs/Images/MarsRover.svg" alt="Mars Rover logo" height="300">
+  <img src="Images/MarsRover.svg" alt="Mars Rover logo" height="200">
 </p>
 
 
