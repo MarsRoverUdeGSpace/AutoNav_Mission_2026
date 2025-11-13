@@ -1,5 +1,4 @@
 # CONTRIBUTING — Autonomous Navigation Mission 2026  
-_Effective Git + ROS 2 workspace workflow_
 
 ---
 
@@ -210,12 +209,5 @@ Use Conventional Commit–style prefixes:
 | `ci`    | CI / pipelines        | `ci: add ROS 2 humble colcon action`         |
 | `chore` | house-keeping / bumps | `chore: update dependencies in requirements` |
 | `misc`  | repo-wide tweaks      | `misc: clean up .gitignore entries`          |
-
-Try to keep each branch on a single topic (one feature, one bugfix, one doc effort).
-That keeps history readable and makes it easier to bisect when something breaks in sim or on the rover.
-
----
-
-```
 
 ---
