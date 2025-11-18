@@ -1,0 +1,120 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- brief Base link carries inertial, visual and collision for Maya -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="${base_inertial_xyz}" rpy="${base_inertial_rpy}"/>
+      <mass value="${base_mass}"/>
+      <inertia ixx="${base_ixx}" ixy="${base_ixy}" ixz="${base_ixz}"
+               iyy="${base_iyy}" iyz="${base_iyz}" izz="${base_izz}"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="${base_link_mesh_offset_xyz}" rpy="${base_link_mesh_offset_rpy}"/>
+      <geometry>
+        <mesh filename="file://$(find maya_description)/meshes/base_link.STL"
+              scale="${mesh_scale} ${mesh_scale} ${mesh_scale}"/>
+      </geometry>
+      <material name="maya_body"/>
+    </visual>
+
+    <collision>
+      <origin xyz="${base_link_mesh_offset_xyz}" rpy="${base_link_mesh_offset_rpy}"/>
+      <geometry>
+        <mesh filename="file://$(find maya_description)/meshes/base_link.STL"
+              scale="${mesh_scale} ${mesh_scale} ${mesh_scale}"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- brief Ground level helper frame for navigation -->
+  <!-- base_footprint has ROS convention axes -->
+  <link name="base_footprint"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <!-- Rotate robot body so that physical forward aligns with base_footprint X -->
+    <origin xyz="0 0 ${footprint_z}" rpy="0 0 ${half_pi}"/>
+  </joint>
+
+  <!-- brief Generic wheel macro with inertial, visual and continuous joint -->
+  <xacro:macro name="maya_wheel"
+               params="prefix mesh
+                       xyz:='0 0 0' rpy:='0 0 0' axis:='${wheel_axis_left}'
+                       inertial_xyz:='0 0 0' inertial_rpy:='0 0 0'">
+
+    <link name="${prefix}">
+      <inertial>
+        <origin xyz="${inertial_xyz}" rpy="${inertial_rpy}"/>
+        <mass value="${wheel_mass}"/>
+        <inertia ixx="${wheel_ixx}" ixy="${wheel_ixy}" ixz="${wheel_ixz}"
+                 iyy="${wheel_iyy}" iyz="${wheel_iyz}" izz="${wheel_izz}"/>
+      </inertial>
+
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${mesh}"
+                scale="${mesh_scale} ${mesh_scale} ${mesh_scale}"/>
+        </geometry>
+        <material name="maya_wheel"/>
+      </visual>
+
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${mesh}"
+                scale="${mesh_scale} ${mesh_scale} ${mesh_scale}"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="${prefix}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child  link="${prefix}"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <axis xyz="${axis}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- brief Left wheels use default spin axis from wheel_axis_left -->
+
+  <xacro:maya_wheel
+      prefix="front_left"
+      mesh="file://$(find maya_description)/meshes/front_left.STL"
+      xyz="-0.38478 -0.62736 -0.27744"
+      rpy="1.5702 0 1.5708"
+      inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057753"
+      inertial_rpy="0 0 0"/>
+
+  <xacro:maya_wheel
+      prefix="back_left"
+      mesh="file://$(find maya_description)/meshes/back_left.STL"
+      xyz="-0.38513 0.28848 -0.27699"
+      rpy="1.5708 0 1.5708"
+      inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057572"
+      inertial_rpy="0 0 0"/>
+
+  <!-- brief Right wheels override spin axis to wheel_axis_right -->
+
+  <xacro:maya_wheel
+      prefix="front_right"
+      mesh="file://$(find maya_description)/meshes/front_right.STL"
+      xyz="0.3987596 -0.61714 -0.27409"
+      rpy="1.5657 0.51887 -1.5734"
+      axis="${wheel_axis_right}"
+      inertial_xyz="-4.8512E-06 -8.0627E-06 -0.046342"
+      inertial_rpy="0 0 0"/>
+
+  <xacro:maya_wheel
+      prefix="back_right"
+      mesh="file://$(find maya_description)/meshes/back_right.STL"
+      xyz="0.4012382 0.27364 -0.28031"
+      rpy="-1.5781 -0.91737 1.5766"
+      axis="${wheel_axis_right}"
+      inertial_xyz="-4.8659E-06 -8.069E-06 -0.034709"
+      inertial_rpy="0 0 0"/>
+
+</robot>
+

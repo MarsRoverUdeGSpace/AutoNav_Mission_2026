@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- brief Global materials shared by Maya -->
+  <material name="maya_body">
+    <color rgba="0.6 0.0 0.0 1.0"/>
+  </material>
+
+  <material name="maya_wheel">
+    <color rgba="0.7 0.7 0.7 1.0"/>
+  </material>
+
+  <!-- brief Mesh scale factor for all STL geometry -->
+  <!-- If meshes are exported in millimeters set mesh_scale to 0.001 -->
+  <xacro:property name="mesh_scale" value="1.0"/>
+
+  <!-- brief Vertical offset from base_footprint to base_link origin -->
+  <!-- base_footprint is on ground plane -->
+  <xacro:property name="footprint_z" value="0.424"/>
+
+  <!-- brief Base link visual and collision mesh offset relative to base_link frame -->
+  <!-- This compensates CAD export so robot origin is centered for navigation -->
+  <xacro:property name="base_link_mesh_offset_xyz" value="0.4 0 0"/>
+  <xacro:property name="base_link_mesh_offset_rpy" value="0 0 0"/>
+
+  <!-- brief Base link inertial parameters in base_link frame -->
+  <!-- COM was exported at minus 0.39811 in X then mesh was shifted plus 0.4 -->
+  <!-- New COM X is minus 0.39811 plus 0.4 equals 0.00189 -->
+  <xacro:property name="base_inertial_xyz" value="0.00189 -0.10577 0.1455"/>
+  <xacro:property name="base_inertial_rpy" value="0 0 0"/>
+
+  <xacro:property name="base_mass" value="24.919"/>
+
+  <!-- brief Base link inertia tensor components in kg m2 -->
+  <xacro:property name="base_ixx" value="4.3782"/>
+  <xacro:property name="base_ixy" value="0.048897"/>
+  <xacro:property name="base_ixz" value="0.11401"/>
+  <xacro:property name="base_iyy" value="6.5909"/>
+  <xacro:property name="base_iyz" value="0.075761"/>
+  <xacro:property name="base_izz" value="3.9583"/>
+
+  <!-- brief Wheel inertial properties shared by four wheels -->
+  <xacro:property name="wheel_mass" value="1.93267"/>
+  <xacro:property name="wheel_ixx"  value="0.0080174"/>
+  <xacro:property name="wheel_iyy"  value="0.0080173"/>
+  <xacro:property name="wheel_izz"  value="0.014159"/>
+
+  <!-- brief Off diagonal terms taken from CAD and assumed equal for all wheels -->
+  <xacro:property name="wheel_ixy" value="1.3553E-08"/>
+  <xacro:property name="wheel_ixz" value="-2.7525E-09"/>
+  <xacro:property name="wheel_iyz" value="1.3936E-09"/>
+
+  <!-- brief Default wheel spin axes -->
+  <!-- Left wheels use positive Z -->
+  <!-- Right wheels use negative Z to compensate CAD mirroring -->
+  <xacro:property name="wheel_axis_left"  value="0 0 1"/>
+  <xacro:property name="wheel_axis_right" value="0 0 -1"/>
+
+  <!-- brief Helper constant for quarter turn about Z -->
+  <xacro:property name="half_pi" value="${pi / 2.0}"/>
+
+  <!-- brief Gazebo drive parameters for skid steer model -->
+  <!-- wheel_separation is lateral distance between left and right wheel centers -->
+  <!-- wheel_radius is effective rolling radius -->
+  <xacro:property name="drive_wheel_separation" value="0.785"/>
+  <xacro:property name="drive_wheel_radius"      value="0.10"/>
+
+</robot>
+
