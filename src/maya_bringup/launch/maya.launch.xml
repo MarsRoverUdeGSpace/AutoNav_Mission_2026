@@ -1,4 +1,9 @@
 <launch>
+    <!-- Force classic OGRE; ogre2 heightmap shaders crash on this random world -->
+    <set_env name="GZ_RENDER_ENGINE" value="ogre2" />
+    <set_env name="IGN_RENDER_ENGINE" value="ogre2" />
+    <set_env name="GZ_SIM_RESOURCE_PATH" value="$(env GZ_SIM_RESOURCE_PATH):$(find-pkg-share maya_bringup)/world" />
+    <let name="gazebo_world_path" value="$(find-pkg-share maya_bringup)/world/random_world.sdf" />
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
     <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
@@ -7,7 +12,7 @@
         <param name="use_sim_time" value="true" />
     </node>
     <include file="$(find-pkg-share ros_gz_sim)/launch/gz_sim.launch.py">
-        <arg name="gz_args" value="empty.sdf -r" />
+        <arg name="gz_args" value="$(var gazebo_world_path) --render-engine ogre2 --render-engine-gui ogre -r" />
     </include>
     <node pkg="ros_gz_sim" exec="create" args="-topic robot_description" />
     <node pkg="ros_gz_bridge" exec="parameter_bridge">
