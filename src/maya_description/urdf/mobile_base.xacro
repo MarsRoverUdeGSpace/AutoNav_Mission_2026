@@ -1,14 +1,16 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <!-- brief Base link carries inertial, visual and collision for Maya -->
+  <!-- Base link carries inertial, visual and collision for Maya -->
   <link name="base_link">
-    <inertial>
-      <origin xyz="${base_inertial_xyz}" rpy="${base_inertial_rpy}"/>
-      <mass value="${base_mass}"/>
-      <inertia ixx="${base_ixx}" ixy="${base_ixy}" ixz="${base_ixz}"
-               iyy="${base_iyy}" iyz="${base_iyz}" izz="${base_izz}"/>
-    </inertial>
+    <!-- Base inertia approximated as axis-aligned box using base dimensions -->
+    <xacro:box_inertia
+      m="${base_mass}"
+      w="${base_width}"
+      d="${base_length}"
+      h="${base_height}"
+      xyz="${base_inertial_xyz}"
+      rpy="${base_inertial_rpy}"/>
 
     <visual>
       <origin xyz="${base_link_mesh_offset_xyz}" rpy="${base_link_mesh_offset_rpy}"/>
@@ -28,8 +30,8 @@
     </collision>
   </link>
 
-  <!-- brief Ground level helper frame for navigation -->
-  <!-- base_footprint has ROS convention axes -->
+  <!-- Ground level helper frame for navigation.
+       base_footprint has ROS convention axes -->
   <link name="base_footprint"/>
   <joint name="base_joint" type="fixed">
     <parent link="base_footprint"/>
@@ -38,19 +40,21 @@
     <origin xyz="0 0 ${footprint_z}" rpy="0 0 ${half_pi}"/>
   </joint>
 
-  <!-- brief Generic wheel macro with inertial, visual and continuous joint -->
+  <!-- Generic wheel macro with inertial, visual and continuous joint -->
   <xacro:macro name="maya_wheel"
                params="prefix mesh
                        xyz:='0 0 0' rpy:='0 0 0' axis:='${wheel_axis_left}'
                        inertial_xyz:='0 0 0' inertial_rpy:='0 0 0'">
 
     <link name="${prefix}">
-      <inertial>
-        <origin xyz="${inertial_xyz}" rpy="${inertial_rpy}"/>
-        <mass value="${wheel_mass}"/>
-        <inertia ixx="${wheel_ixx}" ixy="${wheel_ixy}" ixz="${wheel_ixz}"
-                 iyy="${wheel_iyy}" iyz="${wheel_iyz}" izz="${wheel_izz}"/>
-      </inertial>
+      <!-- Wheel inertia approximated as solid cylinder
+           COM and orientation taken from inertial_xyz / inertial_rpy -->
+      <xacro:cylinder_inertia
+        m="${wheel_mass}"
+        r="${wheel_radius}"
+        h="${wheel_width}"
+        xyz="${inertial_xyz}"
+        rpy="${inertial_rpy}"/>
 
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -78,8 +82,7 @@
     </joint>
   </xacro:macro>
 
-  <!-- brief Left wheels use default spin axis from wheel_axis_left -->
-
+  <!-- Left wheels use default spin axis from wheel_axis_left -->
   <xacro:maya_wheel
       prefix="front_left"
       mesh="file://$(find maya_description)/meshes/front_left.STL"
@@ -96,8 +99,7 @@
       inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057572"
       inertial_rpy="0 0 0"/>
 
-  <!-- brief Right wheels override spin axis to wheel_axis_right -->
-
+  <!-- Right wheels override spin axis to wheel_axis_right -->
   <xacro:maya_wheel
       prefix="front_right"
       mesh="file://$(find maya_description)/meshes/front_right.STL"
