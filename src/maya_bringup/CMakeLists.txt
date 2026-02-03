@@ -10,4 +10,9 @@ install(
     DIRECTORY launch config
     DESTINATION share/${PROJECT_NAME}/
 )
+install(PROGRAMS
+    scripts/scan_frame_relay.py
+    scripts/scan_merge.py
+    DESTINATION lib/${PROJECT_NAME}
+)
 ament_package()
