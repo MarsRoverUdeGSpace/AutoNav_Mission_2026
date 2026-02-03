@@ -5,6 +5,7 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from message_filters import Subscriber, TimeSynchronizer
 from sensor_msgs.msg import LaserScan
 
 
@@ -21,24 +22,14 @@ class ScanMerge(Node):
         self._output_topic = self.get_parameter('output_topic').value
         self._frame_id = self.get_parameter('frame_id').value
 
-        self._scan_1: LaserScan | None = None
-        self._scan_2: LaserScan | None = None
-
         self._pub = self.create_publisher(LaserScan, self._output_topic, qos_profile_sensor_data)
-        self.create_subscription(LaserScan, self._scan_topic_1, self._scan_1_cb, qos_profile_sensor_data)
-        self.create_subscription(LaserScan, self._scan_topic_2, self._scan_2_cb, qos_profile_sensor_data)
+        self._sub_1 = Subscriber(self, LaserScan, self._scan_topic_1, qos_profile=qos_profile_sensor_data)
+        self._sub_2 = Subscriber(self, LaserScan, self._scan_topic_2, qos_profile=qos_profile_sensor_data)
+        self._sync = TimeSynchronizer([self._sub_1, self._sub_2], queue_size=20)
+        self._sync.registerCallback(self._sync_cb)
 
-    def _scan_1_cb(self, msg: LaserScan) -> None:
-        self._scan_1 = msg
-        self._try_publish(msg, self._scan_2)
-
-    def _scan_2_cb(self, msg: LaserScan) -> None:
-        self._scan_2 = msg
-        self._try_publish(msg, self._scan_1)
-
-    def _try_publish(self, primary: LaserScan, secondary: LaserScan | None) -> None:
-        if secondary is None:
-            return
+    def _sync_cb(self, scan_1: LaserScan, scan_2: LaserScan) -> None:
+        primary, secondary = scan_1, scan_2
 
         merged = LaserScan()
         merged.header = primary.header

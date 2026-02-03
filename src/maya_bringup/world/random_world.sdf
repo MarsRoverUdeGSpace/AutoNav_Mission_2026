@@ -8,6 +8,9 @@
     </scene>
 
     <gravity>0 0 -9.8</gravity>
+    <physics name="ode" default="true" type="ode">
+      <max_step_size>0.05</max_step_size>
+    </physics>
 
     <light name="sun" type="directional">
       <pose>0 0 10 0 0 0</pose>
@@ -24,4 +27,3 @@
     </include>
   </world>
 </sdf>
-
