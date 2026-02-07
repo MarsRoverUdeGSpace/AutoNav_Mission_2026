@@ -68,7 +68,7 @@ ros2 run maya_aruco_detector aruco_detector_node --ros-args -p image_topic:=/my_
 ## Laptop Camera Usage
 To run the detector using the laptop's built-in webcam, use the provided launch file which uses the standard `usb_cam` package:
 ```bash
-ros2 launch maya_aruco_detector aruco_screenshot.launch.xml
+ros2 launch maya_aruco_detector aruco_detector.launch.xml
 ```
 This launches:
 - `usb_cam`: Captures video from device 0.
