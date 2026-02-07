@@ -28,7 +28,6 @@ setup(
     entry_points={
         'console_scripts': [
             'aruco_detector_node = maya_aruco_detector.aruco_detector_node:main',
-            'camera_publisher_node = maya_aruco_detector.camera_publisher_node:main',
             'screenshot_node = maya_aruco_detector.screenshot_node:main',
         ],
     },

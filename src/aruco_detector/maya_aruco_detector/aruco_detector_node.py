@@ -8,9 +8,13 @@ from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
 
-import time
 
 class ArucoDetectorNode(Node):
+    """
+    A ROS 2 node that subscribes to an image topic, detects ArUco markers,
+    and publishes the ID of the first detected marker.
+    """
+
     def __init__(self):
         super().__init__('aruco_detector_node')
 
@@ -45,34 +49,41 @@ class ArucoDetectorNode(Node):
             10
         )
         self.cv_bridge = CvBridge()
+        self.cv_image = None
+
+        # Timer for processing images at ~1Hz
+        self.timer = self.create_timer(1.0, self.timer_callback)
 
         self.get_logger().info(f"ArUco Detector Node has been started. Subscribed to {image_topic}")
 
     def image_callback(self, msg):
-        self.get_logger().info("Received image message. Waiting 1s...")
-        time.sleep(1.0)
+        """
+        Callback function for the image subscriber.
+        Converts ROS Image message to OpenCV image and stores it.
+        """
         try:
             # Convert ROS Image message to OpenCV image
-            cv_image = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            self.get_logger().info(f"Image converted successfully. Shape: {cv_image.shape}")
+            self.cv_image = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except CvBridgeError as e:
             self.get_logger().error(f"CvBridge Error: {e}")
-            return
         except Exception as e:
             self.get_logger().error(f"Unknown conversion error: {e}")
+
+    def timer_callback(self):
+        """
+        Timer callback function to process the latest image and detect markers.
+        """
+        if self.cv_image is None:
             return
 
         # Detect markers
-        self.get_logger().info("Calling detectMarkers...")
-        
         # Ensure image is contiguous and grayscale
-        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(self.cv_image, cv2.COLOR_BGR2GRAY)
         gray = np.ascontiguousarray(gray, dtype=np.uint8)
         
         corners, ids, rejected = cv2.aruco.detectMarkers(
             gray, self.aruco_dictionary, parameters=self.aruco_parameters
         )
-        self.get_logger().info(f"detectMarkers returned. Found {len(ids) if ids is not None else 0} markers")
 
         if ids is not None and len(ids) > 0:
             # We found at least one marker
@@ -84,7 +95,7 @@ class ArucoDetectorNode(Node):
             msg_out.data = first_id
             self.publisher_.publish(msg_out)
         else:
-             # Optional: Log if needed, but might be too verbose
+             # No markers detected
              pass
 
 def main(args=None):

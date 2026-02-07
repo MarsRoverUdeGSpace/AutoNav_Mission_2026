@@ -7,16 +7,22 @@ from std_msgs.msg import Int32
 from cv_bridge import CvBridge
 import cv2
 import os
-import time
 from datetime import datetime
 
 class ScreenshotNode(Node):
+    """
+    A ROS 2 node that saves a screenshot of the camera feed when an ArUco marker is detected.
+    Includes a cooldown mechanism to prevent spamming screenshots.
+    """
     def __init__(self):
         super().__init__('screenshot_node')
 
         self.cv_bridge = CvBridge()
         self.last_image = None
-        self.last_save_time = 0
+        self.last_save_time = self.get_clock().now()
+        # Initialize with a time in the past so first detection works immediately
+        self.last_save_time -= rclpy.duration.Duration(seconds=20) 
+        
         self.cooldown_duration = 10.0  # seconds
 
         # Create output directory
@@ -43,15 +49,23 @@ class ScreenshotNode(Node):
         self.get_logger().info("Screenshot Node started. Saving to ~/aruco_detected_screenshot/")
 
     def image_callback(self, msg):
+        """
+        Callback for image topic. Updates the latest available image.
+        """
         try:
             self.last_image = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
             self.get_logger().error(f"Failed to convert image: {e}")
 
     def id_callback(self, msg):
-        current_time = time.time()
+        """
+        Callback for detected ArUco ID. Triggers screenshot save if cooldown has passed.
+        """
+        current_time = self.get_clock().now()
         
-        if (current_time - self.last_save_time) < self.cooldown_duration:
+        time_diff = (current_time - self.last_save_time).nanoseconds / 1e9
+        
+        if time_diff < self.cooldown_duration:
             # Cooldown active
             return
 

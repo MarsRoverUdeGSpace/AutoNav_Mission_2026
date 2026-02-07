@@ -14,6 +14,7 @@ The `maya_aruco_detector` package is a ROS 2 node designed for the Maya Rover (A
 - Python 3
 - OpenCV (`python3-opencv`)
 - `cv_bridge`
+- `usb_cam` (`sudo apt install ros-<distro>-usb-cam`)
 
 ## Installation
 1. Clone the repository into your workspace `src` directory:
@@ -25,6 +26,7 @@ The `maya_aruco_detector` package is a ROS 2 node designed for the Maya Rover (A
 2. Install dependencies:
    ```bash
    rosdep install --from-paths src --ignore-src -r -y
+   sudo apt install ros-jazzy-usb-cam # Or your ROS distro
    ```
 
 3. Build the package:
@@ -39,7 +41,7 @@ The `maya_aruco_detector` package is a ROS 2 node designed for the Maya Rover (A
    ```
 
 ## Usage
-Run the detector node:
+Run the detector node (if you have your own camera publisher):
 ```bash
 ros2 run maya_aruco_detector aruco_detector_node
 ```
@@ -48,7 +50,7 @@ ros2 run maya_aruco_detector aruco_detector_node
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `image_topic` | string | `/camera/image_raw` | The ROS topic to subscribe to for image data. |
-| `aruco_dictionary_id` | string | `DICT_4X4_50` | The ArUco dictionary to use for detection. |
+| `aruco_dictionary_id` | string | `DICT_4X4_250` | The ArUco dictionary to use for detection. |
 
 ### Topics
 * **Subscribed:**
@@ -64,13 +66,14 @@ ros2 run maya_aruco_detector aruco_detector_node --ros-args -p image_topic:=/my_
 ```
 
 ## Laptop Camera Usage
-To run the detector using the laptop's built-in webcam (without needing an external camera driver), use the provided launch file:
+To run the detector using the laptop's built-in webcam, use the provided launch file which uses the standard `usb_cam` package:
 ```bash
-ros2 launch maya_aruco_detector aruco_webcam.launch.py
+ros2 launch maya_aruco_detector aruco_screenshot.launch.xml
 ```
-This launches both:
-- `camera_publisher_node`: Captures video from device 0 and publishes to `/camera/image_raw`.
+This launches:
+- `usb_cam`: Captures video from device 0.
 - `aruco_detector_node`: Subscribes to `/camera/image_raw` and detects markers.
+- `screenshot_node`: Takes screenshots on demand.
 
 ## Troubleshooting
 ### "No executable found"
