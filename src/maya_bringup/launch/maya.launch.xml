@@ -18,6 +18,15 @@
     <arg name="use_zed" default="false" />
     <arg name="zed_camera_model" default="zed2i" />
     <arg name="zed_enable_ipc" default="false" />
+    <arg name="use_zed_static_tf" default="true" />
+    <arg name="zed_tf_parent" default="base_link" />
+    <arg name="zed_tf_child" default="zed_camera_link" />
+    <arg name="zed_tf_x" default="0.0" />
+    <arg name="zed_tf_y" default="-0.30" />
+    <arg name="zed_tf_z" default="0.10" />
+    <arg name="zed_tf_roll" default="0.0" />
+    <arg name="zed_tf_pitch" default="0.0" />
+    <arg name="zed_tf_yaw" default="-1.57079632679" />
     <arg name="odom_topic" default="/odom" />
     <arg name="imu_topic" default="/imu" />
     <arg name="pointcloud_topic" default="/depth_camera/points" />
@@ -29,6 +38,10 @@
             <arg name="camera_model" value="$(var zed_camera_model)" />
             <arg name="enable_ipc" value="$(var zed_enable_ipc)" />
         </include>
+        <group if="$(var use_zed_static_tf)">
+            <node pkg="tf2_ros" exec="static_transform_publisher"
+                  args="--x $(var zed_tf_x) --y $(var zed_tf_y) --z $(var zed_tf_z) --roll $(var zed_tf_roll) --pitch $(var zed_tf_pitch) --yaw $(var zed_tf_yaw) --frame-id $(var zed_tf_parent) --child-frame-id $(var zed_tf_child)" />
+        </group>
     </group>
     <node pkg="robot_state_publisher" exec="robot_state_publisher">
         <param name="robot_description" value="$(command 'xacro $(var urdf_path)')" />
