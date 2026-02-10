@@ -6,8 +6,6 @@
     <arg name="render_engine_gui" default="ogre" />
     <set_env name="GZ_RENDER_ENGINE" value="$(var render_engine)" />
     <set_env name="IGN_RENDER_ENGINE" value="$(var render_engine)" />
-    <set_env name="GZ_SIM_RESOURCE_PATH" value="$(env GZ_SIM_RESOURCE_PATH):$(find-pkg-share maya_bringup)/world" />
-    <set_env name="IGN_GAZEBO_RESOURCE_PATH" value="$(env IGN_GAZEBO_RESOURCE_PATH):$(find-pkg-share maya_bringup)/world" />
     <!-- Use default physics engine (ODE via gz-physics-dartsim fallback) unless overridden -->
     <arg name="world" default="random_world.sdf" />
     <arg name="gz_args" default="$(var world) --render-engine $(var render_engine) --render-engine-gui $(var render_engine_gui) -r" />
@@ -23,6 +21,8 @@
         <param name="use_sim_time" value="$(var use_sim_time)" />
     </node>
     <group if="$(var sim)">
+        <set_env name="GZ_SIM_RESOURCE_PATH" value="$(find-pkg-share maya_bringup)/world" />
+        <set_env name="IGN_GAZEBO_RESOURCE_PATH" value="$(find-pkg-share maya_bringup)/world" />
         <include file="$(find-pkg-share ros_gz_sim)/launch/gz_sim.launch.py">
             <arg name="gz_args" value="$(var gz_args)" />
         </include>
