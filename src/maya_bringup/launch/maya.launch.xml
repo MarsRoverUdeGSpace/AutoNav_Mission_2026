@@ -13,6 +13,7 @@
     <arg name="spawn_y" default="2.0" />
     <arg name="spawn_z" default="1.0" />
     <arg name="spawn_yaw" default="0.0" />
+    <arg name="map" default="" />
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
     <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
@@ -67,6 +68,7 @@
         <arg name="slam" value="True" />
         <arg name="autostart" value="True" />
         <arg name="use_composition" value="False" />
+        <arg name="map" value="$(var map)" />
         <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
     </include>
     <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_path)" />
