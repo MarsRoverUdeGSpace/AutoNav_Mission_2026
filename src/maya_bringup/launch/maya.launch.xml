@@ -15,12 +15,21 @@
     <arg name="spawn_yaw" default="0.0" />
     <arg name="map" default="" />
     <arg name="rviz" default="$(var sim)" />
+    <arg name="use_zed" default="false" />
+    <arg name="zed_camera_model" default="zed2i" />
+    <arg name="zed_enable_ipc" default="false" />
     <arg name="odom_topic" default="/odom" />
     <arg name="imu_topic" default="/imu" />
     <arg name="pointcloud_topic" default="/depth_camera/points" />
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
     <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
+    <group if="$(var use_zed)">
+        <include file="$(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py">
+            <arg name="camera_model" value="$(var zed_camera_model)" />
+            <arg name="enable_ipc" value="$(var zed_enable_ipc)" />
+        </include>
+    </group>
     <node pkg="robot_state_publisher" exec="robot_state_publisher">
         <param name="robot_description" value="$(command 'xacro $(var urdf_path)')" />
         <param name="use_sim_time" value="$(var use_sim_time)" />
