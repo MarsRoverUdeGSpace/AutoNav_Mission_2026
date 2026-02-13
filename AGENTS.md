@@ -31,9 +31,22 @@ If these instructions ever conflict with explicit task instructions, the task in
 - Decide and document a stable spawn pose for `maya` that avoids obstacles.
 - Move / register generated map artifacts (`random_map.pgm` and any YAML) into `src/maya_bringup/maps/` and ensure Nav2 can load them.
 
-## 0.2 Autonomy status (2026-02-10)
+## 0.2 Autonomy status (2026-02-13)
 
 Current focus is hardware bringup on Jetson (ROS 2 Humble) with ZED + IMU + Nav2.
+
+Current validated HW bringup command (Jetson, Humble):
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false rviz:=false \
+  use_zed:=true \
+  zed_camera_model:=zed2i \
+  zed_enable_ipc:=false \
+  odom_topic:=/zed/zed_node/odom \
+  imu_topic:=/zed/zed_node/imu/data \
+  pointcloud_topic:=/zed/zed_node/point_cloud/cloud_registered
+```
 
 **Roadmap to autonomy completeness (rough %)**  
 Percentages reflect readiness for field use, not just compile/run.
@@ -49,11 +62,12 @@ Percentages reflect readiness for field use, not just compile/run.
   - Backup: ZED IMU (optional secondary input).
 - **LiDAR + scan pipeline**: 50%
   - `/scan` and `/scan_merged` must be verified on HW.
-- **2D SLAM (slam_toolbox)**: 50%
-  - Mapping runs, drift reduction still needed.
-- **Nav2 navigation**: 40%
-  - Costmaps, planners, and controllers running.
-  - Needs stable odom + TF and real sensor topic alignment.
+- **2D SLAM (slam_toolbox)**: 60%
+  - Mapping runs on HW bringup command above.
+  - Drift still present and requires IMU/odom refinement.
+- **Nav2 navigation**: 50%
+  - Costmaps, planners, and controllers run in HW mode.
+  - Needs more stable odom + IMU alignment before long autonomous runs.
 - **3D mapping (RTAB-Map / equivalent)**: 10%
   - Planned after LiDAR + encoder odom are stable.
 - **GNSS navigation**: 0%
@@ -71,7 +85,9 @@ Percentages reflect readiness for field use, not just compile/run.
 
 ## 1. Tech stack and key tools
 
-- **ROS 2**: Jazzy (desktop installation).
+- **ROS 2**:
+  - Jazzy on development PC (`develop` branch).
+  - Humble on Jetson (`humble-jetson` branch).
 - **Simulation**: Gazebo Sim (Ignition / gz-sim 8).
 - **Languages**:
   - ROS 2 packages: C++, Python, XML launch, Xacro, YAML.
@@ -362,6 +378,14 @@ If a task only touches documentation (Markdown), you do not need to run code, bu
 
 * A stable Nav2 bringup path with SLAM that reduces or eliminates map drift.
 * Clear, minimal configuration changes that improve localization consistency.
+* A repeatable refinement workflow that balances SIM-first tuning with short HW validation cycles.
+
+**Refinement strategy (SIM vs HW)**
+
+1. Tune algorithmic and config behavior in simulation first (Nav2, SLAM, EKF params).
+2. Validate only high-value changes on Jetson hardware in short, controlled runs.
+3. Treat HW runs as acceptance tests for TF integrity, topic rates, and drift, not first-pass tuning.
+4. Keep branch diffs small and isolate changes by subsystem (IMU, odom, SLAM, costmaps).
 
 **How to treat this in changes**
 
