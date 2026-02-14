@@ -1,0 +1,24 @@
+<launch>
+    <!-- Argument to allow changing the device easily -->
+    <arg name="video_device" default="/dev/video0" />
+
+    <!-- USB Camera Node -->
+    <node pkg="usb_cam" exec="usb_cam_node_exe" name="camera_publisher" output="screen">
+        <param name="video_device" value="$(var video_device)" />
+        <param name="image_width" value="640" />
+        <param name="image_height" value="480" />
+        <param name="pixel_format" value="yuyv" />
+        <param name="camera_name" value="test_camera" />
+        <param name="frame_id" value="camera_frame" />
+        <!-- Remap the topic so aruco detector can find it -->
+        <remap from="/image_raw" to="/camera/image_raw"/>
+    </node>
+
+    <!-- ArUco Detector Node -->
+    <node pkg="maya_aruco_detector" exec="aruco_detector_node" name="aruco_detector" output="screen">
+        <param name="image_topic" value="/camera/image_raw"/>
+    </node>
+
+    <!-- Screenshot Node -->
+    <node pkg="maya_aruco_detector" exec="screenshot_node" name="screenshot_recorder" output="screen" />
+</launch>
