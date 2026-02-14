@@ -1,24 +1,17 @@
 <launch>
-    <!-- Argument to allow changing the device easily -->
-    <arg name="video_device" default="/dev/video0" />
+    <!-- Launch Arguments -->
+    <arg name="camera_model" default="zed2i" description="Model of the ZED camera (zed, zed2, zed2i, zedm, zedx, zedxm)" />
+    <arg name="image_topic" default="/zed/zed_node/rgb/image_rect_color" description="Topic to subscribe to for ArUco detection" />
+    <arg name="aruco_dictionary_id" default="DICT_4X4_250" description="ArUco dictionary to use for detection" />
 
-    <!-- USB Camera Node -->
-    <node pkg="usb_cam" exec="usb_cam_node_exe" name="camera_publisher" output="screen">
-        <param name="video_device" value="$(var video_device)" />
-        <param name="image_width" value="640" />
-        <param name="image_height" value="480" />
-        <param name="pixel_format" value="yuyv" />
-        <param name="camera_name" value="test_camera" />
-        <param name="frame_id" value="camera_frame" />
-        <!-- Remap the topic so aruco detector can find it -->
-        <remap from="/image_raw" to="/camera/image_raw"/>
-    </node>
+    <!-- ZED Wrapper Launch -->
+    <include file="$(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py">
+        <arg name="camera_model" value="$(var camera_model)" />
+    </include>
 
     <!-- ArUco Detector Node -->
-    <node pkg="maya_aruco_detector" exec="aruco_detector_node" name="aruco_detector" output="screen">
-        <param name="image_topic" value="/camera/image_raw"/>
+    <node pkg="maya_aruco_detector" exec="aruco_detector_node" name="aruco_detector_node" output="screen">
+        <param name="image_topic" value="$(var image_topic)" />
+        <param name="aruco_dictionary_id" value="$(var aruco_dictionary_id)" />
     </node>
-
-    <!-- Screenshot Node -->
-    <node pkg="maya_aruco_detector" exec="screenshot_node" name="screenshot_recorder" output="screen" />
 </launch>

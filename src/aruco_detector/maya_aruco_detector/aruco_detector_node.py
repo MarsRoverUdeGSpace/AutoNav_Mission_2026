@@ -22,8 +22,8 @@ class ArucoDetectorNode(Node):
 
         # Parameters
         self.declare_parameter('aruco_dictionary_id', 'DICT_4X4_250')
-        # Default points to standard topic, but can be remapped or set via launch
-        self.declare_parameter('image_topic', '/camera/image_raw')
+        # Default points to ZED camera topic
+        self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
         
         dictionary_id_name = self.get_parameter('aruco_dictionary_id').get_parameter_value().string_value
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
