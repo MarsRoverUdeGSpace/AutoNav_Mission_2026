@@ -6,6 +6,7 @@ Panels:
       Expanded:
         - /Global Options1
         - /Map1/Position1
+        - /PointCloud22
         - /PointCloud22/Topic1
       Splitter Ratio: 0.5
     Tree Height: 1144
@@ -25,7 +26,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: LaserScan
+    SyncSource: PointCloud2
 Visualization Manager:
   Class: ""
   Displays:
@@ -127,10 +128,6 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        back_left:
-          Value: true
-        back_right:
-          Value: true
         base_footprint:
           Value: true
         base_link:
@@ -139,10 +136,6 @@ Visualization Manager:
           Value: true
         camera_link:
           Value: true
-        front_left:
-          Value: true
-        front_right:
-          Value: true
         imu_link:
           Value: true
         lidar_link:
@@ -150,6 +143,18 @@ Visualization Manager:
         map:
           Value: true
         odom:
+          Value: true
+        zed_camera_center:
+          Value: true
+        zed_camera_link:
+          Value: true
+        zed_left_camera_frame:
+          Value: true
+        zed_left_camera_frame_optical:
+          Value: true
+        zed_right_camera_frame:
+          Value: true
+        zed_right_camera_frame_optical:
           Value: true
       Marker Scale: 1
       Name: TF
@@ -161,21 +166,21 @@ Visualization Manager:
           odom:
             base_footprint:
               base_link:
-                back_left:
-                  {}
-                back_right:
-                  {}
                 camera_link:
                   camera_depth_frame:
                     {}
-                front_left:
-                  {}
-                front_right:
-                  {}
                 imu_link:
                   {}
                 lidar_link:
                   {}
+            zed_camera_link:
+              zed_camera_center:
+                zed_left_camera_frame:
+                  zed_left_camera_frame_optical:
+                    {}
+                zed_right_camera_frame:
+                  zed_right_camera_frame_optical:
+                    {}
       Update Interval: 0
       Value: true
     - Angle Tolerance: 0.10000000149011612
@@ -278,8 +283,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        slam_toolbox: true
-        slam_toolbox_edges: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -542,7 +546,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /depth_camera/points
+        Value: /zed/zed_node/point_cloud/cloud_registered
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
@@ -582,7 +586,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 6.703821182250977
+      Distance: 9.829072952270508
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -597,10 +601,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4747960567474365
+      Pitch: -0.1402045041322708
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 4.22808313369751
+      Yaw: 3.5230607986450195
     Saved: ~
 Window Geometry:
   Displays:
