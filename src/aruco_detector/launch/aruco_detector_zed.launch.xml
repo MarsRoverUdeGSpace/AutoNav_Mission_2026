@@ -1,0 +1,17 @@
+<launch>
+    <!-- Launch Arguments -->
+    <arg name="camera_model" default="zed2i" description="Model of the ZED camera (zed, zed2, zed2i, zedm, zedx, zedxm)" />
+    <arg name="image_topic" default="/zed/zed_node/rgb/image_rect_color" description="Topic to subscribe to for ArUco detection" />
+    <arg name="aruco_dictionary_id" default="DICT_4X4_250" description="ArUco dictionary to use for detection" />
+
+    <!-- ZED Wrapper Launch -->
+    <include file="$(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py">
+        <arg name="camera_model" value="$(var camera_model)" />
+    </include>
+
+    <!-- ArUco Detector Node -->
+    <node pkg="maya_aruco_detector" exec="aruco_detector_node" name="aruco_detector_node" output="screen">
+        <param name="image_topic" value="$(var image_topic)" />
+        <param name="aruco_dictionary_id" value="$(var aruco_dictionary_id)" />
+    </node>
+</launch>

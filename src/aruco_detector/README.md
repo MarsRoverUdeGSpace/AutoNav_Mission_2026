@@ -14,7 +14,8 @@ The `maya_aruco_detector` package is a ROS 2 node designed for the Maya Rover (A
 - Python 3
 - OpenCV (`python3-opencv`)
 - `cv_bridge`
-- `usb_cam` (`sudo apt install ros-<distro>-usb-cam`)
+- `zed-ros2-wrapper` (for ZED camera usage)
+- `usb_cam` (optional, for laptop webcam)
 
 ## Installation
 1. Clone the repository into your workspace `src` directory:
@@ -41,39 +42,63 @@ The `maya_aruco_detector` package is a ROS 2 node designed for the Maya Rover (A
    ```
 
 ## Usage
-Run the detector node (if you have your own camera publisher):
-```bash
-ros2 run maya_aruco_detector aruco_detector_node
-```
 
-### Parameters
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `image_topic` | string | `/camera/image_raw` | The ROS topic to subscribe to for image data. |
-| `aruco_dictionary_id` | string | `DICT_4X4_250` | The ArUco dictionary to use for detection. |
+This package supports two modes of operation: **Webcam Mode** (standard USB cameras, CPU only) and **ZED Camera Mode** (ZED 2i, requires NVIDIA GPU).
 
-### Topics
-* **Subscribed:**
-  * `/camera/image_raw` (`sensor_msgs/msg/Image`)
+### 1. Webcam Mode (No GPU required)
+Use this mode for standard USB webcams or if you do not have the ZED SDK installed.
 
-* **Published:**
-  * `/detected_aruco_id` (`std_msgs/msg/Int32`): ID of the first detected marker.
-
-## Customization
-You can remap the image topic via command line if your camera publishes to a different topic:
-```bash
-ros2 run maya_aruco_detector aruco_detector_node --ros-args -p image_topic:=/my_camera/image
-```
-
-## Laptop Camera Usage
-To run the detector using the laptop's built-in webcam, use the provided launch file which uses the standard `usb_cam` package:
+Run the standard launch file:
 ```bash
 ros2 launch maya_aruco_detector aruco_detector.launch.xml
 ```
 This launches:
-- `usb_cam`: Captures video from device 0.
-- `aruco_detector_node`: Subscribes to `/camera/image_raw` and detects markers.
+- `usb_cam`: Captures video from `/dev/video0`.
+- `aruco_detector_node`: Detects markers on `/camera/image_raw`.
 - `screenshot_node`: Takes screenshots on demand.
+
+### 2. ZED Camera Mode (Requires GPU + ZED SDK)
+Use this mode if you have a ZED 2i connected and the ZED SDK installed.
+
+**Prerequisites:**
+- **ZED SDK** installed from [Stereolabs](https://www.stereolabs.com/developers/release/).
+- `zed-ros2-wrapper` package installed in your workspace.
+
+**Installation of ZED Wrapper (if missing):**
+```bash
+cd ~/projects/AutoNav_Mission_2026/src
+git clone https://github.com/stereolabs/zed-ros2-wrapper.git
+cd ..
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --packages-up-to zed_wrapper maya_aruco_detector
+source install/setup.bash
+```
+
+**Launch:**
+To launch the ZED wrapper and the detector together:
+```bash
+ros2 launch maya_aruco_detector aruco_detector_zed.launch.xml
+```
+*   **Default Topic:** `/zed/zed_node/rgb/image_rect_color`
+*   **Default Camera Model:** `zed2i`
+
+**Running Node Only (if ZED is already running):**
+```bash
+ros2 run maya_aruco_detector aruco_detector_node --ros-args -p image_topic:=/zed/zed_node/rgb/image_rect_color
+```
+
+## Topics
+
+*   **Subscribed:**
+    *   `/camera/image_raw` (Webcam Mode) OR `/zed/zed_node/rgb/image_rect_color` (ZED Mode)
+*   **Published:**
+    *   `/detected_aruco_id` (`std_msgs/msg/Int32`): ID of the first detected marker.
+
+## Customization
+You can remap the image topic via command line for any custom camera:
+```bash
+ros2 run maya_aruco_detector aruco_detector_node --ros-args -p image_topic:=/my_camera/image
+```
 
 ## Troubleshooting
 ### "No executable found"

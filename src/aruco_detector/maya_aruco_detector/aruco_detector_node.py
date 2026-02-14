@@ -13,6 +13,8 @@ class ArucoDetectorNode(Node):
     """
     A ROS 2 node that subscribes to an image topic, detects ArUco markers,
     and publishes the ID of the first detected marker.
+    
+    Updated for robust ZED camera support (handling various image encodings).
     """
 
     def __init__(self):
@@ -20,6 +22,7 @@ class ArucoDetectorNode(Node):
 
         # Parameters
         self.declare_parameter('aruco_dictionary_id', 'DICT_4X4_250')
+        # Default points to standard topic, but can be remapped or set via launch
         self.declare_parameter('image_topic', '/camera/image_raw')
         
         dictionary_id_name = self.get_parameter('aruco_dictionary_id').get_parameter_value().string_value
@@ -38,6 +41,7 @@ class ArucoDetectorNode(Node):
         try:
             self.aruco_parameters = cv2.aruco.DetectorParameters_create()
         except AttributeError:
+            # OpenCV 4.7+
             self.aruco_parameters = cv2.aruco.DetectorParameters()
 
         # Publishers and Subscribers
@@ -50,20 +54,32 @@ class ArucoDetectorNode(Node):
         )
         self.cv_bridge = CvBridge()
         self.cv_image = None
+        self.encoding_warned = False
 
-        # Timer for processing images at ~1Hz
-        self.timer = self.create_timer(1.0, self.timer_callback)
+        # Timer for processing images at ~5Hz (increased from 1Hz for better responsiveness)
+        self.timer = self.create_timer(0.2, self.timer_callback)
 
-        self.get_logger().info(f"ArUco Detector Node has been started. Subscribed to {image_topic}")
+        self.get_logger().info(f"ArUco Detector Node started.")
+        self.get_logger().info(f"  - Subscribed to: {image_topic}")
+        self.get_logger().info(f"  - Dictionary: {dictionary_id_name}")
 
     def image_callback(self, msg):
         """
         Callback function for the image subscriber.
         Converts ROS Image message to OpenCV image and stores it.
+        Robustly handles different encodings from ZED or other cameras.
         """
         try:
+            # Check encoding and log if it's new/unexpected (once)
+            if not self.encoding_warned and msg.encoding not in ['bgr8', 'rgb8', 'bgra8']:
+                self.get_logger().info(f"Received image with encoding: {msg.encoding}. cv_bridge will attempt conversion.")
+                self.encoding_warned = True
+
             # Convert ROS Image message to OpenCV image
+            # 'bgr8' is the standard for OpenCV. cv_bridge handles conversions 
+            # from rgb8, bgra8, etc automatically.
             self.cv_image = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            
         except CvBridgeError as e:
             self.get_logger().error(f"CvBridge Error: {e}")
         except Exception as e:
@@ -76,27 +92,30 @@ class ArucoDetectorNode(Node):
         if self.cv_image is None:
             return
 
-        # Detect markers
-        # Ensure image is contiguous and grayscale
-        gray = cv2.cvtColor(self.cv_image, cv2.COLOR_BGR2GRAY)
-        gray = np.ascontiguousarray(gray, dtype=np.uint8)
-        
-        corners, ids, rejected = cv2.aruco.detectMarkers(
-            gray, self.aruco_dictionary, parameters=self.aruco_parameters
-        )
-
-        if ids is not None and len(ids) > 0:
-            # We found at least one marker
-            first_id = int(ids[0][0])
-            self.get_logger().info(f"Detected ArUco ID: {first_id}")
+        try:
+            # Detect markers
+            # Ensure image is grayscale for detection
+            gray = cv2.cvtColor(self.cv_image, cv2.COLOR_BGR2GRAY)
             
-            # Publish the first detected ID
-            msg_out = Int32()
-            msg_out.data = first_id
-            self.publisher_.publish(msg_out)
-        else:
-             # No markers detected
-             pass
+            corners, ids, rejected = cv2.aruco.detectMarkers(
+                gray, self.aruco_dictionary, parameters=self.aruco_parameters
+            )
+
+            if ids is not None and len(ids) > 0:
+                # We found at least one marker
+                first_id = int(ids[0][0])
+                self.get_logger().info(f"Detected ArUco ID: {first_id}")
+                
+                # Publish the first detected ID
+                msg_out = Int32()
+                msg_out.data = first_id
+                self.publisher_.publish(msg_out)
+            else:
+                 # No markers detected
+                 pass
+                 
+        except Exception as e:
+             self.get_logger().error(f"Error during detection: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
