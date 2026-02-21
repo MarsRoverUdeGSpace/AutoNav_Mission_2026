@@ -1,4 +1,75 @@
 ---
+
+## 8. Postmortem – Failed SIM Attempt (2026-02-18)
+
+This section records a failed tuning cycle so future work does not repeat it.
+
+### 8.1 What failed repeatedly
+
+- Validation showed `NavigateToPose` occasionally succeeded while rover did not meaningfully move.
+- Global map stayed extremely small (`/map_metadata` often `5x5` or `6x6` at `0.03 m` resolution).
+- Global costmap remained tiny and mostly occupied/unknown; planner frequently logged:
+  - `Robot is out of bounds of the costmap`
+  - `Sensor origin ... out of map bounds`
+- Local costmap published, but often did not populate obstacles as expected.
+- Startup ordering issue observed: local costmap activation retried while `odom` frame was not yet available.
+- Intermittent actuation checks occurred during bringup windows, causing false negatives.
+
+### 8.2 Key observed signals that matter
+
+- `/cmd_vel` bridging to Gazebo existed and sometimes moved the rover; drive chain was not fully dead.
+- Scan quality looked deceptively “good” in finite-ratio terms, but raw values were pathological:
+  - ranges clustered at lidar minimum range (`~0.08 m`) with near-hit ratio near `1.0`.
+- This pattern indicates self-occlusion / self-hit or invalid sensor geometry context, not a Nav2 planner bug.
+- `voxel_grid` limitation hit when `z_voxels` was set above supported value (`16` max in this setup).
+
+### 8.3 Changes that created additional risk (do not repeat blindly)
+
+- Mixing large SLAM/Nav2 parameter sweeps before confirming raw sensor realism.
+- Switching multiple subsystems at once (SLAM mode + costmaps + validator + sensor placement), making attribution hard.
+- Tuning around symptoms (`xy_goal_tolerance`, medium-goal step, costmap thresholds) while map source remained invalid.
+- Over-relying on merged scan for SLAM before validating that primary lidar scan itself is sane.
+
+### 8.4 Root-cause hypothesis to prioritize first
+
+- Primary blocker is sensor/environment geometry for lidar in simulation (self-hit / immediate clipping), causing tiny map growth.
+- Secondary effects (costmap bounds warnings, goal “success without movement”, tiny global map) cascade from that.
+
+### 8.5 Required workflow for next iteration
+
+1. Validate raw sensor truth first (before Nav2 tuning):
+   - `/scan` must show a realistic spread of ranges, not fixed min-range values.
+2. Only after sensor truth is confirmed:
+   - validate SLAM map growth (`/map_metadata` spans increase with teleop),
+   - then validate Nav2 action behavior and costmaps.
+3. Change one subsystem at a time:
+   - sensor geometry/collision,
+   - SLAM params,
+   - costmap params,
+   - controller params.
+4. Keep deterministic checkpoints after each change:
+   - TF chain exists (`map->odom`, `odom->base_footprint`),
+   - map span > minimum target,
+   - global costmap dimensions track map growth,
+   - action trials require measurable movement.
+
+### 8.6 Guardrails for future tuning
+
+- Do not treat `Goal SUCCEEDED` as evidence of valid navigation without displacement checks.
+- Do not increase `z_voxels` beyond supported implementation limits in this stack.
+- Do not optimize planner/controller until SLAM map span is operationally large.
+- Prefer lidar-first SLAM debugging path; introduce depth-based layers only after baseline is stable.
+
+### 8.7 Resolved milestone (2026-02-20)
+
+- Root cause of "lidar sees only a circle at min range" was rendering backend mismatch with GPU lidar in simulation.
+- Effective fix: run Gazebo with `ogre2` render engine in launch defaults.
+  - `src/maya_bringup/launch/maya.launch.xml` now defaults both `render_engine` and `render_engine_gui` to `ogre2`.
+- After this fix:
+  - `/scan` publishes realistic data (not fixed at range_min).
+  - 2D SLAM with lidar-only input works and map quality is operationally valid in SIM.
+- Temporary fallback path (`/scan_depth`) remains a useful contingency, but primary mapping path should now use `/scan`.
+
 # AGENTS – Autonomous Navigation Mission (Maya Rover)
 
 These instructions apply to the entire `AutoNav_Mission_2026` repository.
