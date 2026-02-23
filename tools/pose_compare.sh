@@ -17,11 +17,27 @@ DURATION_SEC="${1:-5}"
 CMD_VEL_LINEAR="${2:-0.2}"
 CMD_VEL_RATE="${3:-10}"
 RUNS="${4:-10}"
+WORLD="${WORLD:-random_world.sdf}"
+RENDER_ENGINE="${RENDER_ENGINE:-ogre2}"
+RENDER_ENGINE_GUI="${RENDER_ENGINE_GUI:-ogre2}"
+HEADLESS="${HEADLESS:-1}"
+NAV2_CHECK="${NAV2_CHECK:-1}"
+GOAL_X="${GOAL_X:-0.8}"
+GOAL_Y="${GOAL_Y:-0.0}"
+GOAL_TIMEOUT_SEC="${GOAL_TIMEOUT_SEC:-40}"
 
-SIM_LAUNCH_CMD=(ros2 launch maya_bringup maya.launch.xml)
+SIM_LAUNCH_CMD=(ros2 launch maya_bringup maya.launch.xml "rviz:=false")
+if [[ "$HEADLESS" == "1" ]]; then
+  SIM_LAUNCH_CMD+=("gz_args:=${WORLD} -s --render-engine ${RENDER_ENGINE} --render-engine-gui ${RENDER_ENGINE_GUI} -r")
+else
+  SIM_LAUNCH_CMD+=("world:=${WORLD}")
+fi
 
 tmpdir="$(mktemp -d)"
 export TMPDIR_PATH="$tmpdir"
+ros_log_dir="$tmpdir/roslog"
+mkdir -p "$ros_log_dir"
+export ROS_LOG_DIR="$ros_log_dir"
 cleanup() {
   if [[ -n "${LAUNCH_PID:-}" ]]; then
     kill -INT -- "-$LAUNCH_PID" >/dev/null 2>&1 || true
@@ -218,3 +234,37 @@ for f in hz_tf hz_tf_static hz_scan_merged hz_map; do
   printf "%s: " "$f"
   tail -n 1 "$diag_dir/${f}.txt" 2>/dev/null || echo "no data"
 done
+
+if [[ "$NAV2_CHECK" == "1" ]]; then
+  echo ""
+  echo "=== Nav2 Action Diagnostics ==="
+
+  map_meta_file="$diag_dir/map_metadata_before_nav2.txt"
+  timeout 6s ros2 topic echo --once /map_metadata >"$map_meta_file" 2>&1 || true
+  map_w="$(awk '/^width:/ {print $2}' "$map_meta_file" 2>/dev/null || true)"
+  map_h="$(awk '/^height:/ {print $2}' "$map_meta_file" 2>/dev/null || true)"
+  map_w="${map_w:-0}"
+  map_h="${map_h:-0}"
+  echo "Map metadata before Nav2 test: width=${map_w} height=${map_h}"
+
+  if [[ "${map_w}" == "0" || "${map_h}" == "0" ]]; then
+    echo "Map is empty; performing short warmup motion for SLAM..."
+    timeout 8s ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.25}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+    timeout 2s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+    sleep 1
+    timeout 6s ros2 topic echo --once /map_metadata >"$diag_dir/map_metadata_after_warmup.txt" 2>&1 || true
+  fi
+
+  compute_goal="{goal: {header: {frame_id: map}, pose: {position: {x: ${GOAL_X}, y: ${GOAL_Y}, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}, planner_id: GridBased, use_start: false}"
+  nav_goal="{pose: {header: {frame_id: map}, pose: {position: {x: ${GOAL_X}, y: ${GOAL_Y}, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}}"
+
+  echo "Running /compute_path_to_pose ..."
+  timeout "${GOAL_TIMEOUT_SEC}s" ros2 action send_goal /compute_path_to_pose nav2_msgs/action/ComputePathToPose "$compute_goal" --feedback >"$diag_dir/compute_path_to_pose.txt" 2>&1 || true
+  echo "Running /navigate_to_pose ..."
+  timeout "${GOAL_TIMEOUT_SEC}s" ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "$nav_goal" --feedback >"$diag_dir/navigate_to_pose.txt" 2>&1 || true
+
+  echo "-- ComputePath result --"
+  grep -E "Goal finished with status|error_code:|error_msg:" "$diag_dir/compute_path_to_pose.txt" 2>/dev/null || true
+  echo "-- NavigateToPose result --"
+  grep -E "Goal finished with status|error_code:|error_msg:" "$diag_dir/navigate_to_pose.txt" 2>/dev/null || true
+fi

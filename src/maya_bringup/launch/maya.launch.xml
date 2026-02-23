@@ -8,10 +8,11 @@
     <!-- Use default physics engine (ODE via gz-physics-dartsim fallback) unless overridden -->
     <arg name="world" default="random_world.sdf" />
     <arg name="gz_args" default="$(var world) --render-engine $(var render_engine) --render-engine-gui $(var render_engine_gui) -r" />
-    <arg name="spawn_x" default="2.0" />
+    <arg name="spawn_x" default="4.5" />
     <arg name="spawn_y" default="2.0" />
     <arg name="spawn_z" default="1.0" />
     <arg name="spawn_yaw" default="0.0" />
+    <arg name="rviz" default="true" />
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
     <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
@@ -64,5 +65,5 @@
         <arg name="use_composition" value="False" />
         <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
     </include>
-    <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_path)" />
+    <node if="$(var rviz)" pkg="rviz2" exec="rviz2" args="-d $(var rviz_path)" />
 </launch>

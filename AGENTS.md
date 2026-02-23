@@ -70,6 +70,112 @@ This section records a failed tuning cycle so future work does not repeat it.
   - 2D SLAM with lidar-only input works and map quality is operationally valid in SIM.
 - Temporary fallback path (`/scan_depth`) remains a useful contingency, but primary mapping path should now use `/scan`.
 
+### 8.8 Nav2 Planner Timeout Note (error_code 207)
+
+- `NavigateToPose` failure with `ABORTED` + `error_code: 207` maps to `ComputePathToPose TIMEOUT` in Nav2.
+- This indicates a planner / global-costmap feasibility issue (or transform availability at planning time), not a raw sensor timestamp failure.
+- This issue has occurred intermittently during startup and was previously resolved in at least one run, but the exact successful parameter set was not persisted.
+- Required practice:
+  - when a run resolves `207`, immediately save the exact `nav2_params.yaml` diff and launch args in this file (or a dated note in `Docs/`),
+  - do not continue tuning without checkpointing the known-good values.
+
+### 8.9 Health-check script expectations
+
+- `tools/nav2_health_check.sh` is intended for strict SIM diagnostics.
+- If `map -> base_footprint` is temporarily unavailable during startup, the script may fall back to `odom -> base_footprint` for goal generation to keep diagnostics running.
+- A fallback frame goal should be treated as a startup-transient indicator, not a final autonomy acceptance result.
+
+### 8.10 Confirmed Nav2 split diagnosis (2026-02-21)
+
+- `ComputePathToPose` can succeed (`error_code: 0`, status `SUCCEEDED`) while `NavigateToPose` still fails.
+- Observed failure mode:
+  - `NavigateToPose` status `ABORTED` with `error_code: 107` (controller/follow-path timeout behavior).
+  - Feedback shows pose nearly constant and `distance_remaining` not decreasing, indicating command execution blockage or no effective motion.
+- Startup transient to account for:
+  - `/map_metadata` may initially report `width: 0`, `height: 0`.
+  - After short manual motion, SLAM map expands (non-zero dimensions) and planner checks become meaningful.
+- Operational testing rule:
+  1. Warm up SLAM map (short manual drive) until map dimensions are non-zero.
+  2. Run `/compute_path_to_pose` first to validate planner.
+  3. Run `/navigate_to_pose` second to validate controller execution.
+  4. Record both action statuses and `error_code` values in diagnostics.
+
+### 8.11 Nav2 BT Documentation Implication (NavigateToPose)
+
+- Official Nav2 `NavigateToPose` BT node documentation confirms it is a Behavior Tree action wrapper over the `bt_navigator` action server.
+- The BT node exposes `error_code_id` and `error_msg` outputs and supports custom behavior tree selection (`behavior_tree` input).
+- Practical implication for current debugging:
+  - custom BT integration may improve observability and recovery logic,
+  - but it will not fix the current controller execution failure by itself.
+- Current blocker is downstream of planning (controller / velocity pipeline / motion suppression), not the BT wrapper interface.
+
+### 8.12 Current SIM Autonomy Status (2026-02-21)
+
+- Confirmed working:
+  - LiDAR `/scan` in SIM is valid after `ogre2` render engine fix.
+  - SLAM (`slam_toolbox`) produces a valid map after short warmup motion (`/map_metadata` transitions from `0x0` to non-zero).
+  - `ComputePathToPose` succeeds (`error_code: 0`) once map is initialized.
+- Confirmed failing:
+  - `NavigateToPose` aborts with `error_code: 107` after planner succeeds.
+  - Feedback shows `current_pose` nearly constant and `distance_remaining` not decreasing.
+- Interpretation:
+  - Minimal baseline autonomous stack is close, but not yet complete.
+  - Remaining blocker is controller execution path (FollowPath / velocity pipeline), not LiDAR, SLAM map generation, or global planning.
+
+### 8.13 Next Minimal Logical Step (must do before wider integrations)
+
+1. Validate Nav2 command chain during active `NavigateToPose`:
+   - `/cmd_vel_nav`
+   - `/cmd_vel_smoothed`
+   - `/cmd_vel`
+2. Check for motion suppression / safety gating:
+   - `/collision_monitor_state`
+3. Confirm bridge subscription and command delivery to Gazebo during nav:
+   - `/cmd_vel` publisher/subscriber endpoints
+4. Run one controlled unblock test with minimal config changes:
+   - reduce progress checker strictness (`required_movement_radius`, `movement_time_allowance`)
+   - optionally disable/bypass collision monitor temporarily for diagnosis only
+5. Re-test `NavigateToPose` and record:
+   - final status
+   - `error_code`
+   - whether pose changes and `distance_remaining` decreases
+
+### 8.14 Integration Priority Rule (current phase)
+
+- Defer non-essential integrations (custom BT trees, new sensors, GNSS, 3D mapping additions) until `NavigateToPose` can physically move the rover in SIM under Nav2.
+- Acceptable integrations now are only those that directly improve:
+  - controller-path observability,
+  - diagnostics automation,
+  - motion gating isolation,
+  - EKF/odom validation.
+
+### 8.15 Condensed SIM Nav2 Checkpoint (2026-02-23)
+
+- Diagnostic conclusions (from command-chain + A/B tests):
+  - `ComputePathToPose` and the Nav2 velocity pipeline are healthy (`/cmd_vel_nav -> /cmd_vel_smoothed -> /cmd_vel` confirmed).
+  - Frequent `NavigateToPose` `error_code: 107` was primarily an effective-progress issue (not planner failure, not dead `/cmd_vel`).
+  - Collision monitor was not a simple hard-stop, but it reduced progress in tighter maps/space-constrained scenarios.
+  - Disabling collision monitor improved progress but was unsafe (rover could continue into collisions).
+- Current validated configuration (SIM):
+  - `slam_toolbox` uses lidar only: `scan_topic: /scan`
+  - Nav2 costmaps set to lidar-only observations (`observation_sources: scan` in local/global costmaps; depth pointcloud blocks left defined but unused)
+  - relaxed progress checker: `required_movement_radius: 0.05`, `movement_time_allowance: 30.0`
+  - increased forward speed caps: `FollowPath.vx_max: 1.0`, `velocity_smoother.max_velocity[0]: 1.0`
+  - collision monitor enabled: `collision_monitor.FootprintApproach.enabled: True`
+  - random world heightmap scaled to `40m x 40m`
+- Reliability milestone:
+  - `tools/nav2_reliability_trials.sh` added for headless multi-trial validation (warmup forward drive + return-to-reference test).
+  - On current 40x40 random world, automated headless protocol achieved:
+    - `5 / 5` trials `SUCCEEDED`
+    - all `error_code: 0`
+    - mean end-goal error (map frame) ≈ `0.073 m`
+    - median end-goal error (map frame) ≈ `0.030 m`
+    - mean trial duration (sim clock) ≈ `104.8 s`
+- Interpretation and remaining work:
+  - End-to-end Nav2 in SIM is now repeatably functional under the current parameter set.
+  - Next phase is tuning robustness and localization drift (EKF/IMU/SLAM), not basic command-chain viability.
+  - Compare `map` vs Gazebo displacement by magnitude only (different frames); timestamp age metrics from separate CLI samples may show skew.
+
 # AGENTS – Autonomous Navigation Mission (Maya Rover)
 
 These instructions apply to the entire `AutoNav_Mission_2026` repository.

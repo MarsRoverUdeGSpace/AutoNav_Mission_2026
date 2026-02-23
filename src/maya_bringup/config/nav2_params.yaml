@@ -93,8 +93,10 @@ controller_server:
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # DIAG (SIM Nav2 controller execution): relax progress thresholds to confirm
+      # whether FollowPath is aborting due to slow/limited physical motion in Gazebo.
+      required_movement_radius: 0.05
+      movement_time_allowance: 30.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -119,7 +121,7 @@ controller_server:
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
-      vx_max: 0.5
+      vx_max: 1.0
       vx_min: -0.35
       vy_max: 0.5
       wz_max: 1.9
@@ -223,7 +225,7 @@ local_costmap:
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
-        observation_sources: scan pointcloud
+        observation_sources: scan
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -268,7 +270,7 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: scan pointcloud
+        observation_sources: scan
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -399,7 +401,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.5, 0.0, 2.0]
+    max_velocity: [1.0, 0.0, 2.0]
     min_velocity: [-0.5, 0.0, -2.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]

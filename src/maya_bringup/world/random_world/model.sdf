@@ -9,7 +9,7 @@
         <geometry>
           <heightmap>
             <uri>model://random_world/media/materials/texture/random_world.png</uri>
-            <size>20 20 1</size>
+            <size>40 40 1</size>
             <pos>0 0 0</pos>
           </heightmap>
         </geometry>
@@ -26,7 +26,7 @@
               <size>3</size>
             </texture>
             <uri>model://random_world/media/materials/texture/random_world.png</uri>
-            <size>20 20 1</size>
+            <size>40 40 1</size>
             <pos>0 0 0</pos>
           </heightmap>
         </geometry>
