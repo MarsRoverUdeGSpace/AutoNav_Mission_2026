@@ -482,3 +482,32 @@ This section mirrors the current known-good SIM findings from the `develop` bran
   4. only then fuse into EKF/Nav2
 - Keep optional integrations disabled by default until they produce valid data.
 - Prefer within-run paired diagnostics (easy vs stress) when analyzing turning regressions to reduce startup/transient confounds.
+
+### 8.8 Humble-Jetson HW Bringup Milestone (LD19 + ZED + SLAM + ArUco) (2026-02-26)
+
+- LD19 hardware LiDAR was installed and validated on Jetson (`/dev/ttyUSB1`) using `ldlidar_stl_ros2`.
+- Verified from PC over ROS 2 network:
+  - `/scan` publishes valid `LaserScan` data at ~`10 Hz`
+  - `frame_id` is currently `base_laser` (kept intentionally because vendor driver was stable in this mode)
+- `maya.launch.xml` on `humble-jetson` now supports optional LD19 HW bringup in `sim:=false` mode:
+  - `use_ld19:=true`
+  - `lidar_port:=/dev/ttyUSB1`
+  - guarded vendor-style static TF for `base_link -> base_laser`
+  - HW scan relay keeps `base_laser` by default to avoid mislabeling a working stream
+- Selective backport from `develop` applied to `humble-jetson`:
+  - lidar-only Nav2/SLAM baseline (`/scan` active source)
+  - relaxed progress checker
+  - higher forward speed caps
+  - collision monitor observing lidar scan topic
+  - `slam_toolbox` `max_laser_range` aligned to `12.0`
+- Integrated HW bringup confirmed working with:
+  - `LD19` (`/scan`)
+  - `ZED` odom + IMU (`/zed/zed_node/odom`, `/zed/zed_node/imu/data`)
+  - `slam_toolbox` mapping in HW mode
+  - ArUco detector integrated through `maya.launch.xml`
+- ArUco integration update:
+  - `maya.launch.xml` now exposes annotated output mode/topic parameters, including raw annotated image publishing for RViz debugging.
+  - Use `aruco_publish_annotated_raw:=true` to publish `/aruco/annotated_image/raw` (`sensor_msgs/Image`) when RViz rendering of compressed annotated stream is problematic.
+- RViz troubleshooting note (important):
+  - LaserScan displays for `/scan` and `/scan_fixed` may require `Best Effort` QoS in RViz.
+  - With current HW baseline, set RViz fixed frame to `base_laser` (or another TF-connected frame) while validating the raw lidar stream.
