@@ -31,9 +31,14 @@ If these instructions ever conflict with explicit task instructions, the task in
 - Decide and document a stable spawn pose for `maya` that avoids obstacles.
 - Move / register generated map artifacts (`random_map.pgm` and any YAML) into `src/maya_bringup/maps/` and ensure Nav2 can load them.
 
-## 0.2 Autonomy status (2026-02-13)
+## 0.2 Autonomy status (2026-02-15)
 
 Current focus is hardware bringup on Jetson (ROS 2 Humble) with ZED + IMU + Nav2.
+
+Latest validation:
+- `zed-ros2-wrapper` builds successfully in this workspace with ZED SDK `5.1.0`.
+- ZED standalone launch works (`zed_wrapper zed_camera.launch.py camera_model:=zed2i enable_ipc:=false`).
+- NITROS transport is available during `zed_components` build.
 
 Current validated HW bringup command (Jetson, Humble):
 
@@ -80,6 +85,14 @@ Percentages reflect readiness for field use, not just compile/run.
 3. robot_state_publisher confirmed on Jetson (Humble) and remote RViz.
 4. Secondary IMU (IMU2) optionally fused or at least logged.
 5. LiDAR + 3D mapping pipeline producing a consistent local map.
+
+**Immediate next logical steps (execution order)**
+
+1. Implement encoder + odom publishing in Core System (PCB repo) with stable timestamps and diagnostics.
+2. Publish wheel raw telemetry (`/wheel/left_ticks`, `/wheel/right_ticks`) and `/odom` from PCB on Jetson network.
+3. Configure EKF to fuse PCB odom + primary IMU first; add ZED odom as secondary source after PCB odom is stable.
+4. Add `/joint_states` publishing path (PCB or Jetson converter) to restore wheel visualization/debug fidelity.
+5. Run short HW validation loops and tune EKF/SLAM covariances based on logged drift and TF consistency.
 
 ---
 
@@ -396,3 +409,76 @@ When a task mentions Nav2, SLAM, or IMU tuning:
 3. Preserve existing launch entry points unless explicitly asked to restructure.
 
 ---
+
+## 8. SIM Baseline Sync from `develop` (2026-02-24)
+
+This section mirrors the current known-good SIM findings from the `develop` branch so Jetson/HW work can track a stable reference.
+
+### 8.1 Confirmed working SIM baseline (2D SLAM + forward/back autonomous return)
+
+- 2D lidar SLAM (`slam_toolbox`, `scan_topic: /scan`) is operational in SIM after the Gazebo render backend fix (`ogre2`).
+- Nav2 can perform repeatable warmup-forward + return-to-reference runs in SIM (headless reliability script).
+- A validated baseline on `develop` achieved repeatable forward/back autonomous runs (5/5 in the initial checkpoint; later 20-trial follow-up remained broadly functional at 18/20).
+- Interpretation:
+  - End-to-end Nav2 in SIM works.
+  - Current tuning focus is localization consistency / turning behavior, not basic command-chain viability.
+
+### 8.2 IMU frame-id integration bug (critical lesson, fixed on `develop`)
+
+- Root cause found in SIM:
+  - `/imu.header.frame_id` was a Gazebo-scoped sensor name that did not exist in the ROS TF tree.
+- Effective fix on `develop`:
+  - explicitly set Gazebo IMU `gz_frame_id` to `imu_link` in `src/maya_description/urdf/sensors_gazebo.xacro`.
+- After the fix (observed on `develop`):
+  - `/imu.header.frame_id` became `imu_link`
+  - pose/orientation consistency during turning improved noticeably in RViz.
+- Carry-forward rule:
+  - validate message `frame_id` values (`/imu`, `/scan`, `/odom`, future `/visual_odom`) against TF before tuning filters/SLAM.
+
+### 8.3 EKF / IMU tuning result to preserve
+
+- `imu0_relative: true -> false` was tested in SIM after the IMU frame fix and made heading behavior worse.
+- Keep `imu0_relative: true` in the current baseline unless a new controlled A/B test shows otherwise.
+- Remaining known issue:
+  - SIM `/imu.orientation_covariance` and Gazebo `/odom` covariances may be unrealistically zero, which can distort EKF source weighting.
+
+### 8.4 Clean localization tuning baseline defaults (no depth/VIO)
+
+- `develop` was cleaned to a simpler baseline for localization tuning:
+  - depth scan pipeline disabled by default
+  - VIO/RTAB-Map odometry disabled by default
+- Runtime intent of that baseline:
+  - EKF local odom = `/odom` + `/imu`
+  - `slam_toolbox` = lidar scan (`/scan`) + EKF odom prior
+  - Nav2 unchanged
+- Terminology note:
+  - this is a loose-coupled EKF odom + lidar SLAM baseline, not tight LIO.
+
+### 8.5 Optional RTAB-Map / VIO experiments (not baseline)
+
+- `develop` has optional launch scaffolding for RTAB-Map RGB-D odometry and `/visual_odom` EKF fusion testing.
+- Current observed RTAB-Map odom state in SIM was not valid for fusion:
+  - odometry lost (`/odom_info.lost: true`)
+  - `inliers: 0`
+  - invalid quaternion / `9999` covariance in `/visual_odom`
+- Rule:
+  - do not enable VIO odom fusion in regression runs until `/visual_odom` is demonstrably valid and stable.
+
+### 8.6 Reliability diagnostics upgrade (paired turning stress test)
+
+- `tools/nav2_reliability_trials.sh` on `develop` now supports an optional dual-phase per-trial mode:
+  - `phase_a`: easy warmup + return
+  - `phase_b`: warmup + forced in-place turn (default 90 deg) + return
+- Purpose:
+  - quantify turning-induced degradation within the same startup/map conditions.
+- This is useful for future backports or equivalent diagnostics on `humble-jetson` after HW odom/IMU are stable.
+
+### 8.7 Future-proof integration rules (carry forward)
+
+- For any new odometry source (encoders, VIO, GNSS fusion):
+  1. verify topic exists
+  2. verify `header.frame_id` and `child_frame_id`
+  3. verify covariance sanity (non-zero, realistic)
+  4. only then fuse into EKF/Nav2
+- Keep optional integrations disabled by default until they produce valid data.
+- Prefer within-run paired diagnostics (easy vs stress) when analyzing turning regressions to reduce startup/transient confounds.
