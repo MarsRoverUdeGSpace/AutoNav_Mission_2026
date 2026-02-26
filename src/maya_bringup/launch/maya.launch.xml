@@ -21,6 +21,11 @@
 
     <!-- ZED -->
     <arg name="use_zed" default="false" />
+    <!-- LD19 LiDAR (HW only) -->
+    <arg name="use_ld19" default="false" />
+    <arg name="lidar_port" default="/dev/ttyUSB1" />
+    <arg name="ld19_frame_id" default="base_laser" />
+    <arg name="hw_scan_frame_id" default="base_laser" />
     <arg name="zed_camera_model" default="zed2i" />
     <arg name="zed_enable_ipc" default="false" />
     <!-- Empty means "no override"; set to your YAML path on Jetson -->
@@ -101,12 +106,42 @@
         </node>
     </group>
 
+    <!-- LD19 hardware lidar driver (guarded; only for sim:=false) -->
+    <group unless="$(var sim)">
+        <group if="$(var use_ld19)">
+            <node pkg="ldlidar_stl_ros2" exec="ldlidar_stl_ros2_node" name="LD19" output="screen">
+                <param name="product_name" value="LDLiDAR_LD19" />
+                <param name="topic_name" value="scan" />
+                <param name="frame_id" value="$(var ld19_frame_id)" />
+                <param name="port_name" value="$(var lidar_port)" />
+                <param name="port_baudrate" value="230400" />
+                <param name="laser_scan_dir" value="true" />
+                <param name="enable_angle_crop_func" value="false" />
+                <param name="angle_crop_min" value="135.0" />
+                <param name="angle_crop_max" value="225.0" />
+            </node>
+            <!-- Keep vendor standalone TF for base_laser while HW frame contract is being normalized. -->
+            <node pkg="tf2_ros" exec="static_transform_publisher"
+                  name="base_link_to_base_laser_ld19"
+                  args="0 0 0.18 0 0 0 base_link $(var ld19_frame_id)" />
+        </group>
+    </group>
+
     <!-- Lidar scan frame relay -->
-    <node pkg="maya_bringup" exec="scan_frame_relay.py" name="scan_frame_relay" output="screen">
-        <param name="input_topic" value="/scan" />
-        <param name="output_topic" value="/scan_fixed" />
-        <param name="frame_id" value="lidar_link" />
-    </node>
+    <group if="$(var sim)">
+        <node pkg="maya_bringup" exec="scan_frame_relay.py" name="scan_frame_relay" output="screen">
+            <param name="input_topic" value="/scan" />
+            <param name="output_topic" value="/scan_fixed" />
+            <param name="frame_id" value="lidar_link" />
+        </node>
+    </group>
+    <group unless="$(var sim)">
+        <node pkg="maya_bringup" exec="scan_frame_relay.py" name="scan_frame_relay" output="screen">
+            <param name="input_topic" value="/scan" />
+            <param name="output_topic" value="/scan_fixed" />
+            <param name="frame_id" value="$(var hw_scan_frame_id)" />
+        </node>
+    </group>
 
     <!-- Depth cloud -> scan (disable when ZED pointcloud is disabled) -->
     <group if="$(var use_depth_scan)">
