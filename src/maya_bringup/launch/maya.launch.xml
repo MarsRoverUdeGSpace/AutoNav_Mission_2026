@@ -57,6 +57,7 @@
     <arg name="aruco_compressed_topic" default="/zed/zed_node/rgb/color/rect/image/compressed" />
     <arg name="aruco_save_dir" default="/home/ro/aruco_captures" />
     <arg name="aruco_dictionary" default="DICT_4X4_50" />
+    <arg name="aruco_annotated_jpeg_quality" default="35" />
 
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
@@ -77,6 +78,7 @@
                 <param name="compressed_topic" value="$(var aruco_compressed_topic)" />
                 <param name="save_dir" value="$(var aruco_save_dir)" />
                 <param name="aruco_dictionary" value="$(var aruco_dictionary)" />
+                <param name="annotated_jpeg_quality" value="$(var aruco_annotated_jpeg_quality)" />
             </node>
         </group>
 
