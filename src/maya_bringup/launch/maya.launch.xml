@@ -1,23 +1,31 @@
 <launch>
     <arg name="sim" default="true" />
     <arg name="use_sim_time" default="$(var sim)" />
+
     <!-- Heightmap world is more stable on ogre; allow override via args -->
     <arg name="render_engine" default="ogre" />
     <arg name="render_engine_gui" default="ogre" />
     <set_env name="GZ_RENDER_ENGINE" value="$(var render_engine)" />
     <set_env name="IGN_RENDER_ENGINE" value="$(var render_engine)" />
-    <!-- Use default physics engine (ODE via gz-physics-dartsim fallback) unless overridden -->
+
+    <!-- Use default physics engine unless overridden -->
     <arg name="world" default="random_world.sdf" />
     <arg name="gz_args" default="$(var world) --render-engine $(var render_engine) --render-engine-gui $(var render_engine_gui) -r" />
     <arg name="spawn_x" default="2.0" />
     <arg name="spawn_y" default="2.0" />
     <arg name="spawn_z" default="1.0" />
     <arg name="spawn_yaw" default="0.0" />
+
     <arg name="map" default="" />
     <arg name="rviz" default="$(var sim)" />
+
+    <!-- ZED -->
     <arg name="use_zed" default="false" />
     <arg name="zed_camera_model" default="zed2i" />
     <arg name="zed_enable_ipc" default="false" />
+    <!-- Empty means "no override"; set to your YAML path on Jetson -->
+    <arg name="zed_ros_params_override" default="$(find-pkg-share zed_wrapper)/config/profiles/halow_32mbps.yaml" />
+
     <arg name="use_zed_static_tf" default="true" />
     <arg name="zed_tf_parent" default="base_link" />
     <arg name="zed_tf_child" default="zed_camera_link" />
@@ -27,26 +35,59 @@
     <arg name="zed_tf_roll" default="0.0" />
     <arg name="zed_tf_pitch" default="0.0" />
     <arg name="zed_tf_yaw" default="-1.57079632679" />
+
+    <!-- Optional subsystems (useful when IMU/pointcloud are disabled) -->
+    <arg name="use_depth_scan" default="true" />
+    <arg name="use_ekf" default="true" />
+
+    <!-- Topics (kept for future; can be ignored if subsystems are disabled) -->
     <arg name="odom_topic" default="/odom" />
     <arg name="imu_topic" default="/imu" />
     <arg name="pointcloud_topic" default="/depth_camera/points" />
+
+    <!-- ArUco -->
+    <arg name="use_aruco" default="$(var use_zed)" />
+    <arg name="aruco_use_compressed" default="true" />
+    <arg name="aruco_image_topic" default="/zed/zed_node/rgb/color/rect/image" />
+    <arg name="aruco_compressed_topic" default="/zed/zed_node/rgb/color/rect/image/compressed" />
+    <arg name="aruco_save_dir" default="/home/ro/aruco_captures" />
+    <arg name="aruco_dictionary" default="DICT_4X4_50" />
+
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
     <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
+
+    <!-- ZED group -->
     <group if="$(var use_zed)">
         <include file="$(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py">
             <arg name="camera_model" value="$(var zed_camera_model)" />
             <arg name="enable_ipc" value="$(var zed_enable_ipc)" />
+            <arg name="ros_params_override_path" value="$(var zed_ros_params_override)" />
         </include>
+
+        <group if="$(var use_aruco)">
+            <node pkg="maya_aruco_detector" exec="aruco_detector" name="aruco_detector" output="screen">
+                <param name="use_compressed" value="$(var aruco_use_compressed)" />
+                <param name="image_topic" value="$(var aruco_image_topic)" />
+                <param name="compressed_topic" value="$(var aruco_compressed_topic)" />
+                <param name="save_dir" value="$(var aruco_save_dir)" />
+                <param name="aruco_dictionary" value="$(var aruco_dictionary)" />
+            </node>
+        </group>
+
         <group if="$(var use_zed_static_tf)">
             <node pkg="tf2_ros" exec="static_transform_publisher"
                   args="--x $(var zed_tf_x) --y $(var zed_tf_y) --z $(var zed_tf_z) --roll $(var zed_tf_roll) --pitch $(var zed_tf_pitch) --yaw $(var zed_tf_yaw) --frame-id $(var zed_tf_parent) --child-frame-id $(var zed_tf_child)" />
         </group>
     </group>
+
+    <!-- Robot state publisher -->
     <node pkg="robot_state_publisher" exec="robot_state_publisher">
         <param name="robot_description" value="$(command 'xacro $(var urdf_path)')" />
         <param name="use_sim_time" value="$(var use_sim_time)" />
     </node>
+
+    <!-- Simulation (Gazebo) -->
     <group if="$(var sim)">
         <set_env name="GZ_SIM_RESOURCE_PATH" value="$(find-pkg-share maya_bringup)/world" />
         <set_env name="IGN_GAZEBO_RESOURCE_PATH" value="$(find-pkg-share maya_bringup)/world" />
@@ -59,38 +100,54 @@
             <param name="config_file" value="$(var gazebo_config_path)" />
         </node>
     </group>
+
+    <!-- Lidar scan frame relay -->
     <node pkg="maya_bringup" exec="scan_frame_relay.py" name="scan_frame_relay" output="screen">
         <param name="input_topic" value="/scan" />
         <param name="output_topic" value="/scan_fixed" />
         <param name="frame_id" value="lidar_link" />
     </node>
-    <node pkg="pointcloud_to_laserscan" exec="pointcloud_to_laserscan_node" name="depth_cloud_to_scan" output="screen">
-        <param name="target_frame" value="base_footprint" />
-        <param name="transform_tolerance" value="0.05" />
-        <param name="min_height" value="0.05" />
-        <param name="max_height" value="0.8" />
-        <param name="angle_min" value="-3.14159" />
-        <param name="angle_max" value="3.14159" />
-        <param name="angle_increment" value="0.00872665" />
-        <param name="scan_time" value="0.0167" />
-        <param name="range_min" value="0.05" />
-        <param name="range_max" value="10.0" />
-        <param name="use_inf" value="true" />
-        <remap from="cloud_in" to="$(var pointcloud_topic)" />
-        <remap from="scan" to="/scan_depth" />
-    </node>
-    <node pkg="maya_bringup" exec="scan_merge.py" name="scan_merger" output="screen">
-        <param name="scan_topic_1" value="/scan_fixed" />
-        <param name="scan_topic_2" value="/scan_depth" />
-        <param name="output_topic" value="/scan_merged" />
-        <param name="frame_id" value="base_footprint" />
-    </node>
-    <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
-        <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
-        <param name="odom0" value="$(var odom_topic)" />
-        <param name="imu0" value="$(var imu_topic)" />
-        <param name="use_sim_time" value="$(var use_sim_time)" />
-    </node>
+
+    <!-- Depth cloud -> scan (disable when ZED pointcloud is disabled) -->
+    <group if="$(var use_depth_scan)">
+        <node pkg="pointcloud_to_laserscan" exec="pointcloud_to_laserscan_node" name="depth_cloud_to_scan" output="screen">
+            <param name="target_frame" value="base_footprint" />
+            <param name="transform_tolerance" value="0.05" />
+            <param name="min_height" value="0.05" />
+            <param name="max_height" value="0.8" />
+            <param name="angle_min" value="-3.14159" />
+            <param name="angle_max" value="3.14159" />
+            <param name="angle_increment" value="0.00872665" />
+            <param name="scan_time" value="0.0167" />
+            <param name="range_min" value="0.05" />
+            <param name="range_max" value="10.0" />
+            <param name="use_inf" value="true" />
+            <remap from="cloud_in" to="$(var pointcloud_topic)" />
+            <remap from="scan" to="/scan_depth" />
+        </node>
+    </group>
+
+    <!-- Merge lidar + depth scan (disable when depth scan disabled) -->
+    <group if="$(var use_depth_scan)">
+        <node pkg="maya_bringup" exec="scan_merge.py" name="scan_merger" output="screen">
+            <param name="scan_topic_1" value="/scan_fixed" />
+            <param name="scan_topic_2" value="/scan_depth" />
+            <param name="output_topic" value="/scan_merged" />
+            <param name="frame_id" value="base_footprint" />
+        </node>
+    </group>
+
+    <!-- EKF (disable when IMU disabled) -->
+    <group if="$(var use_ekf)">
+        <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+            <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
+            <param name="odom0" value="$(var odom_topic)" />
+            <param name="imu0" value="$(var imu_topic)" />
+            <param name="use_sim_time" value="$(var use_sim_time)" />
+        </node>
+    </group>
+
+    <!-- Nav2 -->
     <include file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
         <arg name="use_sim_time" value="$(var use_sim_time)" />
         <arg name="slam" value="True" />
@@ -99,6 +156,8 @@
         <arg name="map" value="$(var map)" />
         <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
     </include>
+
+    <!-- RViz -->
     <group if="$(var rviz)">
         <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_path)" />
     </group>
