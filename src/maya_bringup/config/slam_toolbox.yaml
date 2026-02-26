@@ -5,7 +5,7 @@ slam_toolbox:
     map_frame: map
     odom_frame: odom
     base_frame: base_footprint
-    scan_topic: /scan_fixed
+    scan_topic: /scan
     resolution: 0.03
     max_laser_range: 8.0
     map_start_pose: [-2.5, -2.5, 0.0]
