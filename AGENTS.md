@@ -511,3 +511,18 @@ This section mirrors the current known-good SIM findings from the `develop` bran
 - RViz troubleshooting note (important):
   - LaserScan displays for `/scan` and `/scan_fixed` may require `Best Effort` QoS in RViz.
   - With current HW baseline, set RViz fixed frame to `base_laser` (or another TF-connected frame) while validating the raw lidar stream.
+
+### 8.9 Next Integration Priority – YOLO Object Detection (High-Level Plan) (2026-02-26)
+
+- Next logical step after the current HW milestone is integrating YOLO object detection as an **optional perception node** in `maya.launch.xml` on `humble-jetson`.
+- Current status:
+  - `.pt` model is already available on the Jetson side.
+  - Core sensing + localization stack is working (LD19 + ZED + SLAM + ArUco), so YOLO can be added without debugging basic bringup at the same time.
+- Integration intent (initial phase):
+  - Subscribe to **ZED compressed RGB image** topic (to match current working bandwidth/profile setup).
+  - Publish detections / annotated outputs for visualization and validation only.
+  - Keep YOLO decoupled from Nav2/SLAM/EKF (no autonomy behavior coupling yet).
+- Guardrails:
+  - Add YOLO as a launch-toggle subsystem (`use_yolo:=true/false`, default off).
+  - Do not modify costmaps / planners / BTs until detections are validated and topic contracts are stable.
+  - Treat message type/QoS compatibility (especially compressed image transport) as first-class validation checks before optimization.
