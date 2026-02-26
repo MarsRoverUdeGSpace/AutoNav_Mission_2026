@@ -176,6 +176,158 @@ This section records a failed tuning cycle so future work does not repeat it.
   - Next phase is tuning robustness and localization drift (EKF/IMU/SLAM), not basic command-chain viability.
   - Compare `map` vs Gazebo displacement by magnitude only (different frames); timestamp age metrics from separate CLI samples may show skew.
 
+### 8.16 Frozen SIM Baseline for 25-Trial Regression (2026-02-23)
+
+- Freeze this configuration before any further tuning or GNSS integration work:
+  - Gazebo render engine defaults: `ogre2` (`render_engine`, `render_engine_gui`) in `maya.launch.xml`
+  - SIM world: `random_world.sdf` with `random_world/model.sdf` heightmap scale `40m x 40m`
+  - SIM spawn default in `maya.launch.xml`: `spawn_x=4.5` (current baseline pose remains in larger free space)
+  - SLAM mapping path: `slam_toolbox` lidar-only with `scan_topic: /scan`
+  - Nav2 costmaps: lidar-only active observations (`observation_sources: scan`), depth pointcloud blocks defined but inactive
+  - Controller progress checker (relaxed):
+    - `required_movement_radius: 0.05`
+    - `movement_time_allowance: 30.0`
+  - Forward speed caps (increased):
+    - `controller_server.FollowPath.vx_max: 1.0`
+    - `velocity_smoother.max_velocity[0]: 1.0`
+  - Collision monitor enabled:
+    - `collision_monitor.FootprintApproach.enabled: True`
+- Frozen regression reference result (headless reliability script, current baseline):
+  - `tools/nav2_reliability_trials.sh` return-to-reference protocol after warmup forward drive (~10m)
+  - `5 / 5` trials `SUCCEEDED`
+  - all `error_code: 0`
+  - mean end-goal error (map frame) ≈ `0.073 m`
+  - median end-goal error (map frame) ≈ `0.030 m`
+  - mean trial duration (sim clock) ≈ `104.8 s`
+- Rule for next tuning cycle:
+  - Run larger-sample regression first (e.g., 25 trials) with this exact baseline before changing Nav2/SLAM/EKF parameters.
+  - If a run improves outcomes, immediately checkpoint exact param diffs and launch args before additional changes.
+
+### 8.17 SIM Reliability Regression Follow-up (20 trials across 4x5 batches, 2026-02-24)
+
+- Baseline repeated over 20 total headless trials (multiple 5-trial runs due operator interruptions/startup retries):
+  - `18 / 20` `SUCCEEDED` (`90%`)
+  - `2 / 20` `TIMEOUT`
+  - successful trials continue to report `error_code: 0`
+- Aggregate behavior (approx across the 20-trial sample):
+  - mean trial duration ≈ `109 s` (sim clock)
+  - mean end-goal error (map frame) ≈ `0.11 m`
+  - mean `|Gazebo-map displacement|` magnitude difference ≈ `0.55 m`
+- Diagnosis update:
+  - End-to-end Nav2 remains broadly functional, but completion reliability is not yet fully locked.
+  - Timeouts often occur near the current goal acceptance boundary (several successful runs also finish near `xy_goal_tolerance`), so near-goal convergence / acceptance behavior is a likely contributor.
+  - Localization consistency (SLAM / odom / EKF) remains a separate tuning target due to persistent map-vs-Gazebo displacement magnitude gap/variance.
+- Next tuning priority (one variable at a time):
+  1. SLAM localization consistency first (active `slam_toolbox` params in `nav2_params.yaml`, confirm runtime values).
+  2. EKF / IMU yaw weighting only if SLAM-side changes do not materially improve consistency.
+  3. Costmap inflation shaping for path centering / smooth potentials after localization behavior is characterized.
+
+### 8.18 EKF IMU Yaw A/B (Yaw-Rate-Only) Under 180-Deg Heading Stress (2026-02-24)
+
+- Test setup change (diagnostic stress protocol):
+  - `tools/nav2_reliability_trials.sh` configured with post-warmup in-place turn:
+    - `POST_WARMUP_TURN_DEG=180`
+  - Goal pose remains the original spawn-reference pose/orientation, so return leg requires a large heading correction near goal.
+- EKF A/B change under test:
+  - `src/maya_bringup/config/ekf.yaml`
+  - IMU absolute yaw fusion disabled; IMU yaw-rate fusion kept enabled (`imu0_config` yaw=false, vyaw=true).
+- Result (10 trials):
+  - `2 / 10` `SUCCEEDED` (`20%`)
+  - `8 / 10` `ABORTED` (mostly `error_code: 208`)
+  - mean end-goal error became very large (multi-meter) due frequent early aborts / non-convergence
+  - several failed trials show low displacement and large remaining goal error after the post-warmup turn
+- Diagnosis:
+  - In this SIM stress scenario, yaw-rate-only IMU fusion is a major regression versus the prior baseline.
+  - Removing absolute IMU yaw significantly degrades heading convergence / consistency after the forced heading reversal.
+- Action:
+  - Revert this EKF A/B change before continuing SLAM/inflation tuning.
+  - If further EKF testing is needed, test `imu0_relative` or covariance changes separately while keeping absolute IMU yaw fused.
+
+### 8.19 IMU Frame-ID Root Cause Fix and EKF Behavior Update (2026-02-24)
+
+- Confirmed IMU integration bug in SIM:
+  - `/imu.header.frame_id` was published as a scoped Gazebo sensor name (`maya/base_footprint/imu_sensor`) that did **not** exist in the ROS TF tree.
+  - TF tree itself was structurally correct (`base_footprint -> base_link`, `base_link -> imu_link`, `base_link -> lidar_link`).
+- Effective fix:
+  - set Gazebo IMU sensor `gz_frame_id` explicitly to `imu_link` in `src/maya_description/urdf/sensors_gazebo.xacro`.
+- After the fix:
+  - `/imu.header.frame_id` now correctly reports `imu_link`.
+  - Manual driving/turning showed noticeably improved pose/orientation consistency in RViz and better return-to-near-start behavior.
+- EKF A/B result recorded:
+  - `imu0_relative: true -> false` (with IMU frame fix in place) made heading behavior worse.
+  - Keep `imu0_relative: true` in current SIM baseline.
+- Remaining EKF/IMU concern (next tuning target):
+  - `/imu.orientation_covariance` is still all zeros in SIM, which can cause EKF yaw over-trust.
+  - `/odom` covariances from Gazebo DiffDrive are also zeros; EKF source weighting remains unrealistic.
+
+### 8.20 Clean SIM Baseline Defaults (Lidar SLAM + EKF odom, no depth/VIO) (2026-02-24)
+
+- Launch defaults were updated to restore a cleaner isolation baseline for localization tuning:
+  - `use_depth_scan_pipeline:=false` by default in `src/maya_bringup/launch/maya.launch.xml`
+  - `use_vio_odom:=false` (default)
+  - `use_rtabmap_odom:=false` (default)
+- Current default SIM runtime intent:
+  - EKF local odom = `/odom` + `/imu`
+  - `slam_toolbox` = lidar scan (`/scan`) + EKF odom prior
+  - Nav2 unchanged
+  - No depth-to-scan conversion / merged scan path by default
+  - No RTAB-Map odometry by default
+- Terminology note:
+  - This is a **loose-coupled EKF odom + lidar SLAM** baseline, not tight LIO.
+
+### 8.21 Optional VIO/RTAB-Map Integration Scaffold (Not Baseline) (2026-02-24)
+
+- Prototype optional EKF visual odometry overlay was drafted locally (for `odom1=/visual_odom` planar fusion), but it is **not part of this develop checkpoint**.
+  - Rationale: `/visual_odom` was not yet valid in SIM (`lost`, invalid quaternion / `9999` covariance), so the overlay file is intentionally left out until the source is proven.
+- Added launch toggles in `src/maya_bringup/launch/maya.launch.xml`:
+  - `use_vio_odom` (loads EKF overlay when true)
+  - `use_rtabmap_odom` (launches optional `rtabmap_odom/rgbd_odometry` when true)
+- RTAB-Map odom node is currently configured to:
+  - remap odometry output to `/visual_odom`
+  - `publish_tf:=false` (avoid TF ownership conflict with EKF/SLAM)
+  - use RGB + depth camera topics from current Gazebo sensors
+- Current observed RTAB-Map state in SIM (with optional path enabled):
+  - `/visual_odom` publishes with compatible frame IDs (`odom` -> `base_footprint`)
+  - but odometry was `lost` (`/odom_info.lost: true`), with `inliers: 0`, invalid quaternion (`w=0`) and `9999` covariance (not suitable for EKF fusion yet)
+  - `rgbd_odometry` in the installed version did not subscribe to `/imu` under the attempted `subscribe_imu` parameter (parameter mismatch/version difference)
+- Rule:
+  - Do not enable `use_vio_odom:=true` in regression runs until `/visual_odom` is demonstrably valid (non-zero quaternion, non-9999 covariance, stable tracking).
+  - If the EKF overlay file is not present in the current branch checkpoint, keep `use_vio_odom:=false`.
+
+### 8.22 Reliability Script Enhancement – Dual-Phase Turn Stress Mode (2026-02-24)
+
+- `tools/nav2_reliability_trials.sh` now supports an optional two-phase per-trial mode to compare easy vs turn-stress behavior under the same startup/map conditions.
+- New env vars:
+  - `DUAL_PHASE_TURN_STRESS_TEST` (default `false`)
+  - `PHASE_A_POST_WARMUP_TURN_DEG` (default `0`)
+  - `PHASE_B_POST_WARMUP_TURN_DEG` (default `90`)
+- Behavior when enabled:
+  1. `phase_a`:
+     - warmup forward drive (~10m)
+     - return-to-reference NavigateToPose
+  2. `phase_b`:
+     - second warmup forward drive (~10m)
+     - post-warmup in-place turn (default `90°`)
+     - return-to-reference NavigateToPose
+- Summary improvements:
+  - per-phase metrics are recorded under `trial -> phases`
+  - aggregate metrics are split by phase (`aggregate.by_phase`)
+  - per-trial stress-minus-easy deltas are reported in `phase_comparison`
+- This mode is intended for quantitative turning diagnostics (TF drift / map-vs-Gazebo displacement / goal error deltas), while keeping legacy single-phase behavior available by default.
+
+### 8.23 Future-Proofing Rules (Carry Forward) (2026-02-24)
+
+- Treat **message `frame_id` values as first-class integration contracts**, not just TF tree existence.
+  - Validate `/imu`, `/scan`, `/odom`, and any future `/visual_odom` headers against TF frames before tuning algorithms.
+- For any new odometry source (VIO, GNSS fusion, encoder odom):
+  1. verify topic exists,
+  2. verify `header.frame_id` and `child_frame_id`,
+  3. verify covariance sanity (non-zero, realistic),
+  4. only then fuse into EKF/Nav2.
+- Keep optional integrations disabled by default until they produce valid data:
+  - RTAB-Map/VIO, depth scan pipeline, future GNSS overlays.
+- Prefer paired/within-trial diagnostics (easy vs stress) when analyzing turning regressions to reduce startup/transient confounds.
+
 # AGENTS – Autonomous Navigation Mission (Maya Rover)
 
 These instructions apply to the entire `AutoNav_Mission_2026` repository.

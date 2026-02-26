@@ -25,6 +25,14 @@ GOAL_TIMEOUT_SEC="${GOAL_TIMEOUT_SEC:-120}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-120}"
 WARMUP_TIMEOUT_SEC="${WARMUP_TIMEOUT_SEC:-60}"
 POST_WARMUP_SETTLE_SEC="${POST_WARMUP_SETTLE_SEC:-1}"
+POST_WARMUP_TURN_DEG="${POST_WARMUP_TURN_DEG:-0}"
+POST_WARMUP_TURN_CMD_VEL_Z="${POST_WARMUP_TURN_CMD_VEL_Z:-0.6}"
+POST_WARMUP_TURN_TIMEOUT_SEC="${POST_WARMUP_TURN_TIMEOUT_SEC:-25}"
+POST_WARMUP_TURN_SETTLE_SEC="${POST_WARMUP_TURN_SETTLE_SEC:-1}"
+POST_WARMUP_TURN_TOL_DEG="${POST_WARMUP_TURN_TOL_DEG:-10}"
+DUAL_PHASE_TURN_STRESS_TEST="${DUAL_PHASE_TURN_STRESS_TEST:-false}"
+PHASE_A_POST_WARMUP_TURN_DEG="${PHASE_A_POST_WARMUP_TURN_DEG:-0}"
+PHASE_B_POST_WARMUP_TURN_DEG="${PHASE_B_POST_WARMUP_TURN_DEG:-90}"
 COLLISION_STATE_CAPTURE_SEC="${COLLISION_STATE_CAPTURE_SEC:-90}"
 RVIZ="${RVIZ:-false}"
 
@@ -180,6 +188,23 @@ print(math.hypot(x1 - x0, y1 - y0))
 PY
 }
 
+normalize_angle_diff() {
+  local start_yaw="$1"
+  local current_yaw="$2"
+  python3 - <<'PY' "$start_yaw" "$current_yaw"
+import math
+import sys
+s = float(sys.argv[1])
+c = float(sys.argv[2])
+d = c - s
+while d > math.pi:
+    d -= 2.0 * math.pi
+while d < -math.pi:
+    d += 2.0 * math.pi
+print(d)
+PY
+}
+
 start_sim() {
   local trial_dir="$1"
   local ros_log_dir="$trial_dir/roslog"
@@ -212,6 +237,257 @@ capture_tf_pose() {
   return 1
 }
 
+run_nav_phase() {
+  local trial="$1"
+  local world_topic="$2"
+  local phase_dir="$3"
+  local phase_label="$4"
+  local phase_turn_deg="$5"
+
+  mkdir -p "$phase_dir"
+
+  # Capture initial pose before warmup and then drive forward ~10m (manual workflow mimic).
+  read_map_metadata "$phase_dir/map_metadata_before.txt"
+  read_pose_component /clock "$phase_dir/clock_pre_warmup.txt"
+  read_pose_component /odom "$phase_dir/odom_pre_warmup.txt"
+  read_pose_component /odometry/filtered "$phase_dir/odom_filtered_pre_warmup.txt"
+  capture_tf_pose odom base_footprint "$phase_dir/tf_odom_base_pre_warmup.txt" || true
+  get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_pre_warmup.txt" || true
+
+  echo "Trial $trial [$phase_label]: warming SLAM map + driving forward ${WARMUP_FORWARD_DISTANCE_M}m..."
+  if [[ ! -s "$phase_dir/gz_pose_pre_warmup.txt" ]]; then
+    echo "Trial $trial [$phase_label]: missing initial Gazebo pose" >&2
+    return 1
+  fi
+  read -r gzsx gzsy _ <"$phase_dir/gz_pose_pre_warmup.txt"
+
+  ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: ${WARMUP_CMD_VEL_X}}, angular: {z: 0.0}}" >/dev/null 2>&1 &
+  WARMUP_PUB_PID=$!
+  warmup_start_sec=$SECONDS
+  warmup_last_progress_sec=$SECONDS
+  warmup_last_progress_print_sec=$SECONDS
+  warmup_best_dist="0.0"
+  spawn_ref_captured=0
+  : >"$phase_dir/warmup_progress.log"
+  while :; do
+    # Capture first available map pose as the return target (near spawn after SLAM initializes).
+    if [[ "$spawn_ref_captured" -eq 0 ]]; then
+      if capture_tf_pose map base_footprint "$phase_dir/tf_map_base_spawn_ref.txt"; then
+        spawn_ref_captured=1
+        echo "Trial $trial [$phase_label]: captured map-frame return reference pose." | tee -a "$phase_dir/warmup_progress.log" >/dev/null
+      fi
+    fi
+
+    if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_warmup_current.txt"; then
+      read -r cgx cgy _ <"$phase_dir/gz_pose_warmup_current.txt"
+      warmup_dist="$(compute_xy_distance "$gzsx" "$gzsy" "$cgx" "$cgy")"
+      printf 'seconds=%s gz_distance_m=%s\n' "$((SECONDS - warmup_start_sec))" "$warmup_dist" >>"$phase_dir/warmup_progress.log"
+      warmup_improved="$(python3 - <<'PY' "$warmup_dist" "$warmup_best_dist"
+import sys
+print("1" if float(sys.argv[1]) > float(sys.argv[2]) + 1e-3 else "0")
+PY
+)"
+      if [[ "$warmup_improved" == "1" ]]; then
+        warmup_best_dist="$warmup_dist"
+        warmup_last_progress_sec=$SECONDS
+      fi
+      if (( SECONDS - warmup_last_progress_print_sec >= 2 )); then
+        echo "Trial $trial [$phase_label]: warmup progress ${warmup_dist}m / ${WARMUP_FORWARD_DISTANCE_M}m (best=${warmup_best_dist}m, t=$((SECONDS - warmup_start_sec))s)"
+        warmup_last_progress_print_sec=$SECONDS
+      fi
+      warmup_reached="$(python3 - <<'PY' "$warmup_dist" "$WARMUP_FORWARD_DISTANCE_M"
+import sys
+print("1" if float(sys.argv[1]) >= float(sys.argv[2]) else "0")
+PY
+)"
+      if [[ "$warmup_reached" == "1" ]]; then
+        break
+      fi
+    fi
+
+    if (( SECONDS - warmup_start_sec >= WARMUP_NO_PROGRESS_TIMEOUT_SEC )); then
+      enough_progress="$(python3 - <<'PY' "$warmup_best_dist" "$WARMUP_MIN_PROGRESS_M"
+import sys
+print("1" if float(sys.argv[1]) >= float(sys.argv[2]) else "0")
+PY
+)"
+      if [[ "$enough_progress" != "1" ]]; then
+        echo "Trial $trial [$phase_label]: warmup fail-fast (only ${warmup_best_dist}m progress after ${WARMUP_NO_PROGRESS_TIMEOUT_SEC}s)." | tee -a "$phase_dir/warmup_progress.log" >/dev/null
+        break
+      fi
+    fi
+
+    if (( SECONDS - warmup_start_sec >= WARMUP_TIMEOUT_SEC )); then
+      echo "Trial $trial [$phase_label]: warmup timed out before reaching target distance." | tee -a "$phase_dir/warmup_progress.log" >/dev/null
+      break
+    fi
+    sleep 0.5
+  done
+
+  kill -INT "$WARMUP_PUB_PID" >/dev/null 2>&1 || true
+  wait "$WARMUP_PUB_PID" >/dev/null 2>&1 || true
+  ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+  sleep "$POST_WARMUP_SETTLE_SEC"
+  read_map_metadata "$phase_dir/map_metadata_after_warmup.txt"
+  echo "Trial $trial [$phase_label]: warmup done (best Gazebo progress=${warmup_best_dist}m)."
+
+  # Optional heading stress test before capturing return-leg start pose.
+  if [[ "${phase_turn_deg}" != "0" && "${phase_turn_deg}" != "0.0" ]]; then
+    target_turn_rad="$(python3 - <<'PY' "$phase_turn_deg"
+import math
+import sys
+print(abs(float(sys.argv[1])) * math.pi / 180.0)
+PY
+)"
+    target_turn_tol_rad="$(python3 - <<'PY' "$POST_WARMUP_TURN_TOL_DEG"
+import math
+import sys
+print(abs(float(sys.argv[1])) * math.pi / 180.0)
+PY
+)"
+    turn_sign="$(python3 - <<'PY' "$phase_turn_deg"
+import sys
+print(1.0 if float(sys.argv[1]) >= 0.0 else -1.0)
+PY
+)"
+    turn_cmd_z="$(python3 - <<'PY' "$POST_WARMUP_TURN_CMD_VEL_Z" "$turn_sign"
+import sys
+print(abs(float(sys.argv[1])) * float(sys.argv[2]))
+PY
+)"
+
+    if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_pre_turn.txt"; then
+      start_yaw="$(python3 - <<'PY' "$phase_dir/gz_pose_pre_turn.txt"
+import math
+import sys
+from pathlib import Path
+txt = Path(sys.argv[1]).read_text().strip().split()
+if len(txt) < 7:
+    raise SystemExit(1)
+_, _, _, qx, qy, qz, qw = map(float, txt[:7])
+siny_cosp = 2.0 * (qw * qz + qx * qy)
+cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+print(math.atan2(siny_cosp, cosy_cosp))
+PY
+)" || start_yaw=""
+    else
+      start_yaw=""
+    fi
+
+    if [[ -n "${start_yaw:-}" ]]; then
+      echo "Trial $trial [$phase_label]: post-warmup rotate ${phase_turn_deg} deg before return start sample."
+      ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: ${turn_cmd_z}}}" >/dev/null 2>&1 &
+      TURN_PUB_PID=$!
+      turn_start_sec=$SECONDS
+      turn_done=0
+      while :; do
+        if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_turn_current.txt"; then
+          current_yaw="$(python3 - <<'PY' "$phase_dir/gz_pose_turn_current.txt"
+import math
+import sys
+from pathlib import Path
+txt = Path(sys.argv[1]).read_text().strip().split()
+if len(txt) < 7:
+    raise SystemExit(1)
+_, _, _, qx, qy, qz, qw = map(float, txt[:7])
+siny_cosp = 2.0 * (qw * qz + qx * qy)
+cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+print(math.atan2(siny_cosp, cosy_cosp))
+PY
+)" || current_yaw=""
+          if [[ -n "${current_yaw:-}" ]]; then
+            turn_delta="$(normalize_angle_diff "$start_yaw" "$current_yaw")"
+            turn_abs="$(python3 - <<'PY' "$turn_delta"
+import sys
+print(abs(float(sys.argv[1])))
+PY
+)"
+            turn_reached="$(python3 - <<'PY' "$turn_abs" "$target_turn_rad" "$target_turn_tol_rad"
+import sys
+turn_abs = float(sys.argv[1]); target = float(sys.argv[2]); tol = float(sys.argv[3])
+threshold = max(0.0, target - tol)
+print("1" if turn_abs >= threshold else "0")
+PY
+)"
+            if [[ "$turn_reached" == "1" ]]; then
+              turn_done=1
+              break
+            fi
+          fi
+        fi
+
+        if (( SECONDS - turn_start_sec >= POST_WARMUP_TURN_TIMEOUT_SEC )); then
+          echo "Trial $trial [$phase_label]: post-warmup turn timed out before reaching target yaw." >&2
+          break
+        fi
+        sleep 0.2
+      done
+
+      kill -INT "$TURN_PUB_PID" >/dev/null 2>&1 || true
+      wait "$TURN_PUB_PID" >/dev/null 2>&1 || true
+      ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+      sleep "$POST_WARMUP_TURN_SETTLE_SEC"
+      if [[ "$turn_done" -eq 1 ]]; then
+        echo "Trial $trial [$phase_label]: post-warmup turn complete."
+      fi
+    else
+      echo "Trial $trial [$phase_label]: skipped post-warmup turn (could not read initial Gazebo yaw)." >&2
+    fi
+  fi
+
+  # Start pose for the navigation phase is after warmup/optional turn.
+  read_pose_component /clock "$phase_dir/clock_start.txt"
+  read_pose_component /odom "$phase_dir/odom_start.txt"
+  read_pose_component /odometry/filtered "$phase_dir/odom_filtered_start.txt"
+  capture_tf_pose map base_footprint "$phase_dir/tf_map_base_start.txt" || true
+  capture_tf_pose odom base_footprint "$phase_dir/tf_odom_base_start.txt" || true
+  get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_start.txt" || true
+
+  if [[ ! -s "$phase_dir/tf_map_base_spawn_ref.txt" ]]; then
+    echo "Trial $trial [$phase_label]: could not capture a map-frame return reference during warmup" >&2
+    return 1
+  fi
+  read -r gx gy gyaw gqx gqy gqz gqw <"$phase_dir/tf_map_base_spawn_ref.txt"
+  printf '%s\n' "{\"pose\": {\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": ${gx}, \"y\": ${gy}, \"z\": 0.0}, \"orientation\": {\"x\": ${gqx:-0.0}, \"y\": ${gqy:-0.0}, \"z\": ${gqz}, \"w\": ${gqw}}}}}" >"$phase_dir/goal.json"
+
+  collision_type="$(ros2 topic type /collision_monitor_state 2>/dev/null || true)"
+  printf '%s\n' "${collision_type:-}" >"$phase_dir/collision_monitor_state_type.txt"
+  if [[ -n "${collision_type:-}" ]]; then
+    timeout "${COLLISION_STATE_CAPTURE_SEC}s" ros2 topic echo /collision_monitor_state >"$phase_dir/collision_monitor_state.txt" 2>&1 &
+    COLLISION_ECHO_PID=$!
+  else
+    COLLISION_ECHO_PID=""
+  fi
+
+  goal_yaml="{pose: {header: {frame_id: map}, pose: {position: {x: ${gx}, y: ${gy}, z: 0.0}, orientation: {x: ${gqx:-0.0}, y: ${gqy:-0.0}, z: ${gqz}, w: ${gqw}}}}}"
+  echo "Trial $trial [$phase_label]: sending NavigateToPose goal (return to recorded start pose)."
+  if timeout "${GOAL_TIMEOUT_SEC}s" ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "$goal_yaml" >"$phase_dir/nav_goal.txt" 2>&1; then
+    true
+  else
+    echo "Trial $trial [$phase_label]: nav goal command timeout/failure (see nav_goal.txt)" >&2
+    printf 'timeout_or_failure\n' >"$phase_dir/nav_goal_timeout.flag"
+  fi
+
+  if [[ -n "${COLLISION_ECHO_PID:-}" ]]; then
+    wait "$COLLISION_ECHO_PID" >/dev/null 2>&1 || true
+  fi
+
+  read_pose_component /clock "$phase_dir/clock_end.txt"
+  read_pose_component /odom "$phase_dir/odom_end.txt"
+  read_pose_component /odometry/filtered "$phase_dir/odom_filtered_end.txt"
+  capture_tf_pose map base_footprint "$phase_dir/tf_map_base_end.txt" || true
+  capture_tf_pose odom base_footprint "$phase_dir/tf_odom_base_end.txt" || true
+  get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_end.txt" || true
+  read_map_metadata "$phase_dir/map_metadata_end.txt"
+
+  timeout 6s ros2 topic info /cmd_vel --verbose >"$phase_dir/cmd_vel_info.txt" 2>&1 || true
+  timeout 6s ros2 topic info /collision_monitor_state --verbose >"$phase_dir/collision_monitor_state_info.txt" 2>&1 || true
+  printf '%s\n' "$phase_turn_deg" >"$phase_dir/post_warmup_turn_deg_used.txt"
+
+  echo "Trial $trial [$phase_label]: phase complete."
+  return 0
+}
+
 for trial in $(seq 1 "$TRIALS"); do
   trial_dir="$diag_root/trial_${trial}"
   mkdir -p "$trial_dir"
@@ -234,141 +510,19 @@ for trial in $(seq 1 "$TRIALS"); do
   fi
   printf '%s\n' "$world_topic" >"$trial_dir/gz_world_topic.txt"
 
-  # Capture initial pose before warmup and then drive forward ~10m (manual workflow mimic).
-  read_map_metadata "$trial_dir/map_metadata_before.txt"
-  read_pose_component /clock "$trial_dir/clock_pre_warmup.txt"
-  read_pose_component /odom "$trial_dir/odom_pre_warmup.txt"
-  read_pose_component /odometry/filtered "$trial_dir/odom_filtered_pre_warmup.txt"
-  capture_tf_pose odom base_footprint "$trial_dir/tf_odom_base_pre_warmup.txt" || true
-  get_maya_pose_retry "$world_topic" >"$trial_dir/gz_pose_pre_warmup.txt" || true
-
-  echo "Trial $trial: warming SLAM map + driving forward ${WARMUP_FORWARD_DISTANCE_M}m..."
-  if [[ ! -s "$trial_dir/gz_pose_pre_warmup.txt" ]]; then
-    echo "Trial $trial: missing initial Gazebo pose" >&2
-    stop_sim
-    continue
-  fi
-  read -r gzsx gzsy _ <"$trial_dir/gz_pose_pre_warmup.txt"
-
-  ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: ${WARMUP_CMD_VEL_X}}, angular: {z: 0.0}}" >/dev/null 2>&1 &
-  WARMUP_PUB_PID=$!
-  warmup_start_sec=$SECONDS
-  warmup_last_progress_sec=$SECONDS
-  warmup_last_progress_print_sec=$SECONDS
-  warmup_best_dist="0.0"
-  spawn_ref_captured=0
-  : >"$trial_dir/warmup_progress.log"
-  while :; do
-    # Capture first available map pose as the return target (near spawn after SLAM initializes).
-    if [[ "$spawn_ref_captured" -eq 0 ]]; then
-      if capture_tf_pose map base_footprint "$trial_dir/tf_map_base_spawn_ref.txt"; then
-        spawn_ref_captured=1
-        echo "Trial $trial: captured map-frame return reference pose." | tee -a "$trial_dir/warmup_progress.log" >/dev/null
-      fi
+  phase_failed=0
+  if [[ "$DUAL_PHASE_TURN_STRESS_TEST" == "true" ]]; then
+    run_nav_phase "$trial" "$world_topic" "$trial_dir/phase_a" "phase_a_easy" "$PHASE_A_POST_WARMUP_TURN_DEG" || phase_failed=1
+    if [[ "$phase_failed" -eq 0 ]]; then
+      run_nav_phase "$trial" "$world_topic" "$trial_dir/phase_b" "phase_b_turn_stress" "$PHASE_B_POST_WARMUP_TURN_DEG" || phase_failed=1
     fi
-
-    if get_maya_pose_retry "$world_topic" >"$trial_dir/gz_pose_warmup_current.txt"; then
-      read -r cgx cgy _ <"$trial_dir/gz_pose_warmup_current.txt"
-      warmup_dist="$(compute_xy_distance "$gzsx" "$gzsy" "$cgx" "$cgy")"
-      printf 'seconds=%s gz_distance_m=%s\n' "$((SECONDS - warmup_start_sec))" "$warmup_dist" >>"$trial_dir/warmup_progress.log"
-      warmup_improved="$(python3 - <<'PY' "$warmup_dist" "$warmup_best_dist"
-import sys
-print("1" if float(sys.argv[1]) > float(sys.argv[2]) + 1e-3 else "0")
-PY
-)"
-      if [[ "$warmup_improved" == "1" ]]; then
-        warmup_best_dist="$warmup_dist"
-        warmup_last_progress_sec=$SECONDS
-      fi
-      if (( SECONDS - warmup_last_progress_print_sec >= 2 )); then
-        echo "Trial $trial: warmup progress ${warmup_dist}m / ${WARMUP_FORWARD_DISTANCE_M}m (best=${warmup_best_dist}m, t=$((SECONDS - warmup_start_sec))s)"
-        warmup_last_progress_print_sec=$SECONDS
-      fi
-      warmup_reached="$(python3 - <<'PY' "$warmup_dist" "$WARMUP_FORWARD_DISTANCE_M"
-import sys
-print("1" if float(sys.argv[1]) >= float(sys.argv[2]) else "0")
-PY
-)"
-      if [[ "$warmup_reached" == "1" ]]; then
-        break
-      fi
-    fi
-
-    if (( SECONDS - warmup_start_sec >= WARMUP_NO_PROGRESS_TIMEOUT_SEC )); then
-      enough_progress="$(python3 - <<'PY' "$warmup_best_dist" "$WARMUP_MIN_PROGRESS_M"
-import sys
-print("1" if float(sys.argv[1]) >= float(sys.argv[2]) else "0")
-PY
-)"
-      if [[ "$enough_progress" != "1" ]]; then
-        echo "Trial $trial: warmup fail-fast (only ${warmup_best_dist}m progress after ${WARMUP_NO_PROGRESS_TIMEOUT_SEC}s)." | tee -a "$trial_dir/warmup_progress.log" >/dev/null
-        break
-      fi
-    fi
-
-    if (( SECONDS - warmup_start_sec >= WARMUP_TIMEOUT_SEC )); then
-      echo "Trial $trial: warmup timed out before reaching target distance." | tee -a "$trial_dir/warmup_progress.log" >/dev/null
-      break
-    fi
-    sleep 0.5
-  done
-
-  kill -INT "$WARMUP_PUB_PID" >/dev/null 2>&1 || true
-  wait "$WARMUP_PUB_PID" >/dev/null 2>&1 || true
-  ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
-  sleep "$POST_WARMUP_SETTLE_SEC"
-  read_map_metadata "$trial_dir/map_metadata_after_warmup.txt"
-  echo "Trial $trial: warmup done (best Gazebo progress=${warmup_best_dist}m)."
-
-  # Start pose for the navigation trial is after warmup; goal is return-to-reference pose captured near spawn.
-  read_pose_component /clock "$trial_dir/clock_start.txt"
-  read_pose_component /odom "$trial_dir/odom_start.txt"
-  read_pose_component /odometry/filtered "$trial_dir/odom_filtered_start.txt"
-  capture_tf_pose map base_footprint "$trial_dir/tf_map_base_start.txt" || true
-  capture_tf_pose odom base_footprint "$trial_dir/tf_odom_base_start.txt" || true
-  get_maya_pose_retry "$world_topic" >"$trial_dir/gz_pose_start.txt" || true
-
-  if [[ ! -s "$trial_dir/tf_map_base_spawn_ref.txt" ]]; then
-    echo "Trial $trial: could not capture a map-frame return reference during warmup" >&2
-    stop_sim
-    continue
-  fi
-  read -r gx gy gyaw gqx gqy gqz gqw <"$trial_dir/tf_map_base_spawn_ref.txt"
-  printf '%s\n' "{\"pose\": {\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": ${gx}, \"y\": ${gy}, \"z\": 0.0}, \"orientation\": {\"x\": ${gqx:-0.0}, \"y\": ${gqy:-0.0}, \"z\": ${gqz}, \"w\": ${gqw}}}}}" >"$trial_dir/goal.json"
-
-  collision_type="$(ros2 topic type /collision_monitor_state 2>/dev/null || true)"
-  printf '%s\n' "${collision_type:-}" >"$trial_dir/collision_monitor_state_type.txt"
-  if [[ -n "${collision_type:-}" ]]; then
-    timeout "${COLLISION_STATE_CAPTURE_SEC}s" ros2 topic echo /collision_monitor_state >"$trial_dir/collision_monitor_state.txt" 2>&1 &
-    COLLISION_ECHO_PID=$!
   else
-    COLLISION_ECHO_PID=""
+    run_nav_phase "$trial" "$world_topic" "$trial_dir" "single" "$POST_WARMUP_TURN_DEG" || phase_failed=1
   fi
 
-  goal_yaml="{pose: {header: {frame_id: map}, pose: {position: {x: ${gx}, y: ${gy}, z: 0.0}, orientation: {x: ${gqx:-0.0}, y: ${gqy:-0.0}, z: ${gqz}, w: ${gqw}}}}}"
-  echo "Trial $trial: sending NavigateToPose goal (return to recorded start pose)."
-  if timeout "${GOAL_TIMEOUT_SEC}s" ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "$goal_yaml" >"$trial_dir/nav_goal.txt" 2>&1; then
-    true
-  else
-    echo "Trial $trial: nav goal command timeout/failure (see nav_goal.txt)" >&2
-    printf 'timeout_or_failure\n' >"$trial_dir/nav_goal_timeout.flag"
+  if [[ "$phase_failed" -eq 1 ]]; then
+    echo "Trial $trial: one or more phases failed (see trial diagnostics)." >&2
   fi
-
-  if [[ -n "${COLLISION_ECHO_PID:-}" ]]; then
-    wait "$COLLISION_ECHO_PID" >/dev/null 2>&1 || true
-  fi
-
-  read_pose_component /clock "$trial_dir/clock_end.txt"
-  read_pose_component /odom "$trial_dir/odom_end.txt"
-  read_pose_component /odometry/filtered "$trial_dir/odom_filtered_end.txt"
-  capture_tf_pose map base_footprint "$trial_dir/tf_map_base_end.txt" || true
-  capture_tf_pose odom base_footprint "$trial_dir/tf_odom_base_end.txt" || true
-  get_maya_pose_retry "$world_topic" >"$trial_dir/gz_pose_end.txt" || true
-  read_map_metadata "$trial_dir/map_metadata_end.txt"
-
-  timeout 6s ros2 topic info /cmd_vel --verbose >"$trial_dir/cmd_vel_info.txt" 2>&1 || true
-  timeout 6s ros2 topic info /collision_monitor_state --verbose >"$trial_dir/collision_monitor_state_info.txt" 2>&1 || true
-
   echo "Trial $trial: complete, shutting down simulation."
   stop_sim
 done
@@ -518,37 +672,40 @@ report = {
     "aggregate": {},
 }
 
-for trial_dir in sorted(diag_root.glob("trial_*")):
-    trial_name = trial_dir.name
-    start_map = parse_tf_pose(trial_dir / "tf_map_base_start.txt")
-    end_map = parse_tf_pose(trial_dir / "tf_map_base_end.txt")
-    start_odom_tf = parse_tf_pose(trial_dir / "tf_odom_base_start.txt")
-    end_odom_tf = parse_tf_pose(trial_dir / "tf_odom_base_end.txt")
-    start_gz = parse_gz_pose(trial_dir / "gz_pose_start.txt")
-    end_gz = parse_gz_pose(trial_dir / "gz_pose_end.txt")
-    odom_start = parse_odom_xy(trial_dir / "odom_start.txt")
-    odom_end = parse_odom_xy(trial_dir / "odom_end.txt")
-    filt_start = parse_odom_xy(trial_dir / "odom_filtered_start.txt")
-    filt_end = parse_odom_xy(trial_dir / "odom_filtered_end.txt")
-    goal = parse_goal_json(trial_dir / "goal.json")
-    nav = parse_nav_goal_result(trial_dir / "nav_goal.txt")
-    if nav["status"] == "UNKNOWN" and (trial_dir / "nav_goal_timeout.flag").exists():
+
+def parse_phase_dir(phase_dir: Path, phase_name: str):
+    start_map = parse_tf_pose(phase_dir / "tf_map_base_start.txt")
+    end_map = parse_tf_pose(phase_dir / "tf_map_base_end.txt")
+    start_odom_tf = parse_tf_pose(phase_dir / "tf_odom_base_start.txt")
+    end_odom_tf = parse_tf_pose(phase_dir / "tf_odom_base_end.txt")
+    start_gz = parse_gz_pose(phase_dir / "gz_pose_start.txt")
+    end_gz = parse_gz_pose(phase_dir / "gz_pose_end.txt")
+    odom_start = parse_odom_xy(phase_dir / "odom_start.txt")
+    odom_end = parse_odom_xy(phase_dir / "odom_end.txt")
+    filt_start = parse_odom_xy(phase_dir / "odom_filtered_start.txt")
+    filt_end = parse_odom_xy(phase_dir / "odom_filtered_end.txt")
+    goal = parse_goal_json(phase_dir / "goal.json")
+    nav = parse_nav_goal_result(phase_dir / "nav_goal.txt")
+    if nav["status"] == "UNKNOWN" and (phase_dir / "nav_goal_timeout.flag").exists():
         nav["status"] = "TIMEOUT"
-    collision = parse_collision_states(trial_dir / "collision_monitor_state.txt")
-    map_meta_before = parse_map_metadata(trial_dir / "map_metadata_before.txt")
-    map_meta_after = parse_map_metadata(trial_dir / "map_metadata_after_warmup.txt")
-    map_meta_end = parse_map_metadata(trial_dir / "map_metadata_end.txt")
+    collision = parse_collision_states(phase_dir / "collision_monitor_state.txt")
+    map_meta_before = parse_map_metadata(phase_dir / "map_metadata_before.txt")
+    map_meta_after = parse_map_metadata(phase_dir / "map_metadata_after_warmup.txt")
+    map_meta_end = parse_map_metadata(phase_dir / "map_metadata_end.txt")
 
-    clock_start = parse_clock(trial_dir / "clock_start.txt")
-    clock_end = parse_clock(trial_dir / "clock_end.txt")
-    odom_start_stamp = parse_header_stamp(trial_dir / "odom_start.txt")
-    odom_end_stamp = parse_header_stamp(trial_dir / "odom_end.txt")
-    filt_start_stamp = parse_header_stamp(trial_dir / "odom_filtered_start.txt")
-    filt_end_stamp = parse_header_stamp(trial_dir / "odometry_filtered_end.txt") or parse_header_stamp(trial_dir / "odom_filtered_end.txt")
+    clock_start = parse_clock(phase_dir / "clock_start.txt")
+    clock_end = parse_clock(phase_dir / "clock_end.txt")
+    odom_start_stamp = parse_header_stamp(phase_dir / "odom_start.txt")
+    odom_end_stamp = parse_header_stamp(phase_dir / "odom_end.txt")
+    filt_start_stamp = parse_header_stamp(phase_dir / "odom_filtered_start.txt")
+    filt_end_stamp = parse_header_stamp(phase_dir / "odometry_filtered_end.txt") or parse_header_stamp(phase_dir / "odom_filtered_end.txt")
+    turn_deg_txt = read_text(phase_dir / "post_warmup_turn_deg_used.txt").strip()
+    turn_deg_used = float(turn_deg_txt) if turn_deg_txt else None
 
-    trial = {
-        "trial": trial_name,
+    phase = {
+        "phase": phase_name,
         "nav_result": nav,
+        "post_warmup_turn_deg_used": turn_deg_used,
         "clock": {
             "start": clock_start,
             "end": clock_end,
@@ -586,93 +743,146 @@ for trial_dir in sorted(diag_root.glob("trial_*")):
         "metrics": {},
     }
 
-    # Movement metrics
     if start_map and end_map:
         mvec = dxy(start_map, end_map)
-        trial["metrics"]["map_tf_delta"] = {**mvec, "distance_m": mag(mvec)}
+        phase["metrics"]["map_tf_delta"] = {**mvec, "distance_m": mag(mvec)}
     if start_odom_tf and end_odom_tf:
         ovec = dxy(start_odom_tf, end_odom_tf)
-        trial["metrics"]["odom_tf_delta"] = {**ovec, "distance_m": mag(ovec)}
+        phase["metrics"]["odom_tf_delta"] = {**ovec, "distance_m": mag(ovec)}
     if start_gz and end_gz:
         gvec = dxy(start_gz, end_gz)
-        trial["metrics"]["gazebo_delta"] = {**gvec, "distance_m": mag(gvec)}
+        phase["metrics"]["gazebo_delta"] = {**gvec, "distance_m": mag(gvec)}
     if odom_start and odom_end:
         omsg = dxy(odom_start, odom_end)
-        trial["metrics"]["odom_msg_delta"] = {**omsg, "distance_m": mag(omsg)}
+        phase["metrics"]["odom_msg_delta"] = {**omsg, "distance_m": mag(omsg)}
     if filt_start and filt_end:
         fmsg = dxy(filt_start, filt_end)
-        trial["metrics"]["odom_filtered_msg_delta"] = {**fmsg, "distance_m": mag(fmsg)}
+        phase["metrics"]["odom_filtered_msg_delta"] = {**fmsg, "distance_m": mag(fmsg)}
     if goal and end_map:
-        trial["metrics"]["goal_error_from_end_map_m"] = dist_xy({"x": goal["x"], "y": goal["y"]}, end_map)
-        trial["metrics"]["goal_distance_from_start_map_m"] = dist_xy(start_map, {"x": goal["x"], "y": goal["y"]}) if start_map else None
+        phase["metrics"]["goal_error_from_end_map_m"] = dist_xy({"x": goal["x"], "y": goal["y"]}, end_map)
+        phase["metrics"]["goal_distance_from_start_map_m"] = dist_xy(start_map, {"x": goal["x"], "y": goal["y"]}) if start_map else None
     if goal and start_map:
-        trial["metrics"]["goal_distance_from_start_map_m"] = dist_xy(start_map, {"x": goal["x"], "y": goal["y"]})
+        phase["metrics"]["goal_distance_from_start_map_m"] = dist_xy(start_map, {"x": goal["x"], "y": goal["y"]})
 
-    # Cross-system delta consistency (Gazebo vs map TF displacement)
-    g = trial["metrics"].get("gazebo_delta")
-    m = trial["metrics"].get("map_tf_delta")
+    g = phase["metrics"].get("gazebo_delta")
+    m = phase["metrics"].get("map_tf_delta")
     if g and m:
-        trial["metrics"]["gazebo_vs_map_displacement"] = {
+        phase["metrics"]["gazebo_vs_map_displacement"] = {
             "distance_diff_m": abs(g["distance_m"] - m["distance_m"]),
             "distance_ratio": (m["distance_m"] / g["distance_m"]) if abs(g["distance_m"]) > 1e-9 else None,
             "note": "Map TF and Gazebo vectors are different frames; compare magnitudes, not dx/dy components.",
         }
+    return phase
 
-    report["trials"].append(trial)
+for trial_dir in sorted(diag_root.glob("trial_*")):
+    trial_name = trial_dir.name
+    phase_dirs = sorted([p for p in trial_dir.glob("phase_*") if p.is_dir()])
+    if phase_dirs:
+        trial = {"trial": trial_name, "phases": {}, "phase_comparison": {}}
+        for p in phase_dirs:
+            trial["phases"][p.name] = parse_phase_dir(p, p.name)
+        a = trial["phases"].get("phase_a")
+        b = trial["phases"].get("phase_b")
+        if a and b:
+            def mget(phase, key):
+                return phase.get("metrics", {}).get(key)
+            a_goal = mget(a, "goal_error_from_end_map_m")
+            b_goal = mget(b, "goal_error_from_end_map_m")
+            a_dur = a.get("clock", {}).get("duration_sec")
+            b_dur = b.get("clock", {}).get("duration_sec")
+            a_diff = (mget(a, "gazebo_vs_map_displacement") or {}).get("distance_diff_m")
+            b_diff = (mget(b, "gazebo_vs_map_displacement") or {}).get("distance_diff_m")
+            trial["phase_comparison"] = {
+                "goal_error_stress_minus_easy_m": (b_goal - a_goal) if a_goal is not None and b_goal is not None else None,
+                "duration_stress_minus_easy_sec": (b_dur - a_dur) if a_dur is not None and b_dur is not None else None,
+                "gazebo_vs_map_disp_diff_stress_minus_easy_m": (b_diff - a_diff) if a_diff is not None and b_diff is not None else None,
+                "phase_a_status": a["nav_result"]["status"],
+                "phase_b_status": b["nav_result"]["status"],
+            }
+        report["trials"].append(trial)
+    else:
+        phase = parse_phase_dir(trial_dir, "single")
+        report["trials"].append({"trial": trial_name, "phases": {"single": phase}, "phase_comparison": {}})
 
 
-completed = [t for t in report["trials"] if t["nav_result"]["raw_available"]]
-succ = [t for t in completed if t["nav_result"]["status"] == "SUCCEEDED"]
-map_goal_errors = [t["metrics"].get("goal_error_from_end_map_m") for t in completed if t["metrics"].get("goal_error_from_end_map_m") is not None]
-map_moves = [t["metrics"].get("map_tf_delta", {}).get("distance_m") for t in completed if t["metrics"].get("map_tf_delta", {}).get("distance_m") is not None]
-gz_moves = [t["metrics"].get("gazebo_delta", {}).get("distance_m") for t in completed if t["metrics"].get("gazebo_delta", {}).get("distance_m") is not None]
-disp_diffs = [t["metrics"].get("gazebo_vs_map_displacement", {}).get("distance_diff_m") for t in completed if t["metrics"].get("gazebo_vs_map_displacement", {}).get("distance_diff_m") is not None]
-durations = [t["clock"]["duration_sec"] for t in completed if t["clock"]["duration_sec"] is not None]
-collision_changes = [t["collision_monitor_state"]["changed"] for t in completed if t["collision_monitor_state"]["changed"] is not None]
+all_phases = []
+for t in report["trials"]:
+    for pname, p in t.get("phases", {}).items():
+        all_phases.append((t["trial"], pname, p))
+
+completed = [(tn, pn, p) for (tn, pn, p) in all_phases if p["nav_result"]["raw_available"]]
+succ = [(tn, pn, p) for (tn, pn, p) in completed if p["nav_result"]["status"] == "SUCCEEDED"]
+
+def phase_aggregate(phase_rows):
+    rows = [r for r in phase_rows if r[2]["nav_result"]["raw_available"]]
+    srows = [r for r in rows if r[2]["nav_result"]["status"] == "SUCCEEDED"]
+    map_goal_errors = [r[2]["metrics"].get("goal_error_from_end_map_m") for r in rows if r[2]["metrics"].get("goal_error_from_end_map_m") is not None]
+    map_moves = [r[2]["metrics"].get("map_tf_delta", {}).get("distance_m") for r in rows if r[2]["metrics"].get("map_tf_delta", {}).get("distance_m") is not None]
+    gz_moves = [r[2]["metrics"].get("gazebo_delta", {}).get("distance_m") for r in rows if r[2]["metrics"].get("gazebo_delta", {}).get("distance_m") is not None]
+    disp_diffs = [r[2]["metrics"].get("gazebo_vs_map_displacement", {}).get("distance_diff_m") for r in rows if r[2]["metrics"].get("gazebo_vs_map_displacement", {}).get("distance_diff_m") is not None]
+    durations = [r[2]["clock"]["duration_sec"] for r in rows if r[2]["clock"]["duration_sec"] is not None]
+    collision_changes = [r[2]["collision_monitor_state"]["changed"] for r in rows if r[2]["collision_monitor_state"]["changed"] is not None]
+    return {
+        "completed_phases": len(rows),
+        "success_count": len(srows),
+        "success_rate": (len(srows) / len(rows)) if rows else None,
+        "aborted_count": sum(1 for _, _, p in rows if p["nav_result"]["status"] == "ABORTED"),
+        "timeout_count": sum(1 for _, _, p in rows if p["nav_result"]["status"] == "TIMEOUT"),
+        "statuses": [p["nav_result"]["status"] for _, _, p in rows],
+        "error_codes": [p["nav_result"]["error_code"] for _, _, p in rows],
+        "duration_sec_mean": stats.mean(durations) if durations else None,
+        "duration_sec_median": stats.median(durations) if durations else None,
+        "goal_error_end_map_mean_m": stats.mean(map_goal_errors) if map_goal_errors else None,
+        "goal_error_end_map_median_m": stats.median(map_goal_errors) if map_goal_errors else None,
+        "map_displacement_mean_m": stats.mean(map_moves) if map_moves else None,
+        "gazebo_displacement_mean_m": stats.mean(gz_moves) if gz_moves else None,
+        "gazebo_vs_map_disp_diff_mean_m": stats.mean(disp_diffs) if disp_diffs else None,
+        "collision_monitor_state_changed_true_count": sum(1 for x in collision_changes if x is True),
+        "collision_monitor_state_samples_available_count": len(collision_changes),
+    }
 
 report["aggregate"] = {
-    "completed_trials": len(completed),
-    "success_count": len(succ),
-    "success_rate": (len(succ) / len(completed)) if completed else None,
-    "aborted_count": sum(1 for t in completed if t["nav_result"]["status"] == "ABORTED"),
-    "timeout_count": sum(1 for t in completed if t["nav_result"]["status"] == "TIMEOUT"),
-    "statuses": [t["nav_result"]["status"] for t in completed],
-    "error_codes": [t["nav_result"]["error_code"] for t in completed],
-    "duration_sec_mean": stats.mean(durations) if durations else None,
-    "duration_sec_median": stats.median(durations) if durations else None,
-    "goal_error_end_map_mean_m": stats.mean(map_goal_errors) if map_goal_errors else None,
-    "goal_error_end_map_median_m": stats.median(map_goal_errors) if map_goal_errors else None,
-    "map_displacement_mean_m": stats.mean(map_moves) if map_moves else None,
-    "gazebo_displacement_mean_m": stats.mean(gz_moves) if gz_moves else None,
-    "gazebo_vs_map_disp_diff_mean_m": stats.mean(disp_diffs) if disp_diffs else None,
-    "collision_monitor_state_changed_true_count": sum(1 for x in collision_changes if x is True),
-    "collision_monitor_state_samples_available_count": len(collision_changes),
+    "completed_trials": len(report["trials"]),
+    "completed_phases_total": len(completed),
+    "success_count_total": len(succ),
+    "success_rate_total": (len(succ) / len(completed)) if completed else None,
+    "phase_names_seen": sorted(set(pn for _, pn, _ in all_phases)),
+    "all_phases": phase_aggregate(all_phases),
+    "by_phase": {},
 }
+for phase_name in sorted(set(pn for _, pn, _ in all_phases)):
+    report["aggregate"]["by_phase"][phase_name] = phase_aggregate([r for r in all_phases if r[1] == phase_name])
 
 summary_path = diag_root / "summary.json"
 summary_path.write_text(json.dumps(report, indent=2))
 
 print("\n=== Nav2 Reliability Trials Summary ===")
 agg = report["aggregate"]
-print(f"Trials completed: {agg['completed_trials']} / {trials_expected}")
-print(f"Successes: {agg['success_count']}  Aborts: {agg['aborted_count']}  Success rate: {agg['success_rate']}")
-print(f"Mean duration (sim clock): {agg['duration_sec_mean']}")
-print(f"Mean end-goal error (map TF): {agg['goal_error_end_map_mean_m']}")
-print(f"Mean map displacement: {agg['map_displacement_mean_m']}")
-print(f"Mean Gazebo displacement: {agg['gazebo_displacement_mean_m']}")
-print(f"Mean |Gazebo-map displacement| diff: {agg['gazebo_vs_map_disp_diff_mean_m']}")
-print(f"Collision monitor state changed (available samples): {agg['collision_monitor_state_changed_true_count']} / {agg['collision_monitor_state_samples_available_count']}")
+print(f"Trials parsed: {agg['completed_trials']} / {trials_expected}")
+print(f"Phases completed: {agg['completed_phases_total']}")
+print(f"Total successes: {agg['success_count_total']}  Success rate: {agg['success_rate_total']}")
+print("By phase:")
+for pname, pagg in agg["by_phase"].items():
+    print(f"- {pname}: completed={pagg['completed_phases']} success={pagg['success_count']} rate={pagg['success_rate']} "
+          f"mean_dur={pagg['duration_sec_mean']} mean_goal_err={pagg['goal_error_end_map_mean_m']} "
+          f"mean_|gz-map|_diff={pagg['gazebo_vs_map_disp_diff_mean_m']}")
 
 print("\nPer-trial:")
 for t in report["trials"]:
-    status = t["nav_result"]["status"]
-    err = t["nav_result"]["error_code"]
-    dur = t["clock"]["duration_sec"]
-    map_move = (t["metrics"].get("map_tf_delta") or {}).get("distance_m")
-    gz_move = (t["metrics"].get("gazebo_delta") or {}).get("distance_m")
-    goal_err = t["metrics"].get("goal_error_from_end_map_m")
-    cm = t["collision_monitor_state"].get("changed")
-    print(f"- {t['trial']}: status={status} error_code={err} dur={dur} map_move={map_move} gz_move={gz_move} goal_err={goal_err} collision_state_changed={cm}")
+    pieces = []
+    for pname, p in sorted(t.get("phases", {}).items()):
+        status = p["nav_result"]["status"]
+        err = p["nav_result"]["error_code"]
+        dur = p["clock"]["duration_sec"]
+        goal_err = p["metrics"].get("goal_error_from_end_map_m")
+        pieces.append(f"{pname}:status={status},err={err},dur={dur},goal_err={goal_err},turn_deg={p.get('post_warmup_turn_deg_used')}")
+    cmp = t.get("phase_comparison", {})
+    cmp_txt = ""
+    if cmp:
+        cmp_txt = (f" | stress-easy Δgoal={cmp.get('goal_error_stress_minus_easy_m')} "
+                   f"Δdur={cmp.get('duration_stress_minus_easy_sec')} "
+                   f"Δ|gz-map|={cmp.get('gazebo_vs_map_disp_diff_stress_minus_easy_m')}")
+    print(f"- {t['trial']}: " + " ; ".join(pieces) + cmp_txt)
 
 print(f"\nDetailed report: {summary_path}")
 PY

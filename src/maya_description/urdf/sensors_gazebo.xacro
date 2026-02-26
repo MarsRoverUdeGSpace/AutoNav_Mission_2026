@@ -5,27 +5,31 @@
   <gazebo reference="imu_link">
     <sensor name="imu_sensor" type="imu">
       <always_on>1</always_on>
-      <update_rate>200</update_rate>
+      <!-- Approximate BNO055 fused output-rate regime; using 50 Hz for current SIM tuning. -->
+      <update_rate>50</update_rate>
       <visualize>true</visualize>
       <topic>imu</topic>
+      <!-- Force ROS/GZ IMU messages to use the URDF IMU frame instead of a scoped sensor name. -->
+      <gz_frame_id>imu_link</gz_frame_id>
       <imu>
         <angular_velocity>
           <x>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.0001</stddev>
+              <!-- BNO055 gyro noise is much higher than this idealized value; use a practical rad/s approximation. -->
+              <stddev>0.003</stddev>
             </noise>
           </x>
           <y>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.0001</stddev>
+              <stddev>0.003</stddev>
             </noise>
           </y>
           <z>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.0001</stddev>
+              <stddev>0.003</stddev>
             </noise>
           </z>
         </angular_velocity>
@@ -33,19 +37,20 @@
           <x>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.005</stddev>
+              <!-- BNO055 accel noise density (~190 ug/sqrtHz) at ~62.5 Hz BW is roughly O(0.01 m/s^2) RMS. -->
+              <stddev>0.015</stddev>
             </noise>
           </x>
           <y>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.005</stddev>
+              <stddev>0.015</stddev>
             </noise>
           </y>
           <z>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.005</stddev>
+              <stddev>0.015</stddev>
             </noise>
           </z>
         </linear_acceleration>
@@ -59,13 +64,13 @@
       <pose>0 0 0 0 0 0</pose>
       <always_on>true</always_on>
       <visualize>true</visualize>
-      <update_rate>20</update_rate>
+      <update_rate>10</update_rate>
       <topic>scan</topic>
       <gz_frame_id>lidar_link</gz_frame_id>
       <ray>
         <scan>
           <horizontal>
-            <samples>360</samples>
+            <samples>450</samples>
             <resolution>1</resolution>
             <min_angle>-3.14</min_angle>
             <max_angle>3.14</max_angle>
@@ -78,8 +83,8 @@
           </vertical>
         </scan>
         <range>
-          <min>0.08</min>
-          <max>10.0</max>
+          <min>0.03</min>
+          <max>12.0</max>
           <resolution>0.01</resolution>
         </range>
       </ray>

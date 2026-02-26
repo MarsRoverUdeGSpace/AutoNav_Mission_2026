@@ -47,7 +47,7 @@ slam_toolbox:
     base_frame: base_footprint
     scan_topic: /scan
     resolution: 0.03
-    max_laser_range: 8.0
+    max_laser_range: 12.0
 
 bt_navigator:
   ros__parameters:
