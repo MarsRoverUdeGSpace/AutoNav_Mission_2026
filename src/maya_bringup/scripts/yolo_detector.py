@@ -7,7 +7,8 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-from sensor_msgs.msg import CompressedImage
+from cv_bridge import CvBridge
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import String
 from ultralytics import YOLO
 
@@ -24,6 +25,9 @@ class YoloDetector(Node):
         self.declare_parameter("iou_threshold", 0.45)
         self.declare_parameter("annotated_topic", "/yolo/annotated_image")
         self.declare_parameter("annotated_jpeg_quality", 35)
+        self.declare_parameter("publish_annotated_compressed", True)
+        self.declare_parameter("publish_annotated_raw", False)
+        self.declare_parameter("annotated_raw_topic", "/yolo/annotated_image/raw")
         self.declare_parameter("detections_topic", "/yolo/detections_json")
         self.declare_parameter("process_every_n", 1)
 
@@ -34,9 +38,13 @@ class YoloDetector(Node):
         self.iou_threshold = float(self.get_parameter("iou_threshold").value)
         self.annotated_topic = str(self.get_parameter("annotated_topic").value)
         self.annotated_jpeg_quality = int(self.get_parameter("annotated_jpeg_quality").value)
+        self.publish_annotated_compressed = bool(self.get_parameter("publish_annotated_compressed").value)
+        self.publish_annotated_raw = bool(self.get_parameter("publish_annotated_raw").value)
+        self.annotated_raw_topic = str(self.get_parameter("annotated_raw_topic").value)
         self.detections_topic = str(self.get_parameter("detections_topic").value)
         self.process_every_n = max(1, int(self.get_parameter("process_every_n").value))
         self.frame_count = 0
+        self.bridge = CvBridge()
 
         if not model_path:
             self.get_logger().error("Parameter 'model_path' is empty. Set it to a .pt file.")
@@ -60,11 +68,23 @@ class YoloDetector(Node):
         self.sub = self.create_subscription(
             CompressedImage, self.compressed_topic, self._on_image, qos
         )
-        self.pub_annotated = self.create_publisher(CompressedImage, self.annotated_topic, 1)
+        self.pub_annotated_compressed = None
+        self.pub_annotated_raw = None
+        if self.publish_annotated_compressed:
+            self.pub_annotated_compressed = self.create_publisher(
+                CompressedImage, self.annotated_topic, 1
+            )
+        if self.publish_annotated_raw:
+            self.pub_annotated_raw = self.create_publisher(
+                Image, self.annotated_raw_topic, 1
+            )
         self.pub_detections = self.create_publisher(String, self.detections_topic, 10)
 
         self.get_logger().info(f"Subscribed to: {self.compressed_topic}")
-        self.get_logger().info(f"Publishing annotated: {self.annotated_topic}")
+        if self.pub_annotated_compressed is not None:
+            self.get_logger().info(f"Publishing annotated compressed: {self.annotated_topic}")
+        if self.pub_annotated_raw is not None:
+            self.get_logger().info(f"Publishing annotated raw: {self.annotated_raw_topic}")
         self.get_logger().info(f"Publishing detections: {self.detections_topic}")
 
     def _on_image(self, msg: CompressedImage) -> None:
@@ -93,14 +113,19 @@ class YoloDetector(Node):
         result = results[0]
         annotated = result.plot()
 
-        q = int(np.clip(self.annotated_jpeg_quality, 1, 100))
-        ok, buf = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), q])
-        if ok:
-            out_img = CompressedImage()
-            out_img.header = msg.header
-            out_img.format = "jpeg"
-            out_img.data = buf.tobytes()
-            self.pub_annotated.publish(out_img)
+        if self.pub_annotated_compressed is not None:
+            q = int(np.clip(self.annotated_jpeg_quality, 1, 100))
+            ok, buf = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+            if ok:
+                out_img = CompressedImage()
+                out_img.header = msg.header
+                out_img.format = "jpeg"
+                out_img.data = buf.tobytes()
+                self.pub_annotated_compressed.publish(out_img)
+        if self.pub_annotated_raw is not None:
+            out_raw = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
+            out_raw.header = msg.header
+            self.pub_annotated_raw.publish(out_raw)
 
         dets = []
         names = result.names if result.names is not None else {}
