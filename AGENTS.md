@@ -526,3 +526,16 @@ This section mirrors the current known-good SIM findings from the `develop` bran
   - Add YOLO as a launch-toggle subsystem (`use_yolo:=true/false`, default off).
   - Do not modify costmaps / planners / BTs until detections are validated and topic contracts are stable.
   - Treat message type/QoS compatibility (especially compressed image transport) as first-class validation checks before optimization.
+
+### 8.10 YOLO Integration Status (CPU-Only) and ArUco Isolation Rule (2026-02-27)
+
+- YOLO integration in `maya_bringup` is functional:
+  - subscribes to ZED compressed RGB input
+  - publishes detections and annotated outputs
+  - raw annotated image output is available for RViz (`/yolo/annotated_image/raw`)
+- Current runtime limitation on Jetson:
+  - CUDA-enabled PyTorch wheel source was not reachable from network/DNS, so current YOLO runtime is CPU-only.
+  - Use `yolo_device:=cpu` until Jetson CUDA wheel installation path is fixed.
+- Operational isolation rule:
+  - When validating ArUco behavior/regression, launch with `use_yolo:=false` to remove perception-resource contention and topic overlap confounds.
+  - Re-enable YOLO only after ArUco topic/output is confirmed healthy.
