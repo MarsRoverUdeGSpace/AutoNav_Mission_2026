@@ -63,6 +63,19 @@
     <arg name="aruco_publish_annotated_raw" default="false" />
     <arg name="aruco_annotated_raw_topic" default="/aruco/annotated_image/raw" />
 
+    <!-- YOLO -->
+    <arg name="use_yolo" default="false" />
+    <arg name="yolo_use_compressed" default="true" />
+    <arg name="yolo_compressed_topic" default="/zed/zed_node/rgb/color/rect/image/compressed" />
+    <arg name="yolo_model_path" default="$(find-pkg-share maya_bringup)/models/maya.pt" />
+    <arg name="yolo_device" default="cuda:0" />
+    <arg name="yolo_conf_threshold" default="0.35" />
+    <arg name="yolo_iou_threshold" default="0.45" />
+    <arg name="yolo_annotated_topic" default="/yolo/annotated_image" />
+    <arg name="yolo_annotated_jpeg_quality" default="35" />
+    <arg name="yolo_detections_topic" default="/yolo/detections_json" />
+    <arg name="yolo_process_every_n" default="1" />
+
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
     <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
     <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
@@ -87,6 +100,21 @@
                 <param name="publish_annotated_compressed" value="$(var aruco_publish_annotated_compressed)" />
                 <param name="publish_annotated_raw" value="$(var aruco_publish_annotated_raw)" />
                 <param name="annotated_raw_topic" value="$(var aruco_annotated_raw_topic)" />
+            </node>
+        </group>
+
+        <group if="$(var use_yolo)">
+            <node pkg="maya_bringup" exec="yolo_detector.py" name="yolo_detector" output="screen">
+                <param name="use_compressed" value="$(var yolo_use_compressed)" />
+                <param name="compressed_topic" value="$(var yolo_compressed_topic)" />
+                <param name="model_path" value="$(var yolo_model_path)" />
+                <param name="device" value="$(var yolo_device)" />
+                <param name="conf_threshold" value="$(var yolo_conf_threshold)" />
+                <param name="iou_threshold" value="$(var yolo_iou_threshold)" />
+                <param name="annotated_topic" value="$(var yolo_annotated_topic)" />
+                <param name="annotated_jpeg_quality" value="$(var yolo_annotated_jpeg_quality)" />
+                <param name="detections_topic" value="$(var yolo_detections_topic)" />
+                <param name="process_every_n" value="$(var yolo_process_every_n)" />
             </node>
         </group>
 

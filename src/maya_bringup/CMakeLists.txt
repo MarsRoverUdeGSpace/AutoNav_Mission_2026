@@ -7,12 +7,13 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 install(
-    DIRECTORY launch config world
+    DIRECTORY launch config world models
     DESTINATION share/${PROJECT_NAME}/
 )
 install(PROGRAMS
     scripts/scan_frame_relay.py
     scripts/scan_merge.py
+    scripts/yolo_detector.py
     DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()
