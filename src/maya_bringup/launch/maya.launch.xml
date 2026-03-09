@@ -10,13 +10,11 @@
     <arg name="gz_args" default="$(var world) --render-engine $(var render_engine) --render-engine-gui $(var render_engine_gui) -r" />
     <arg name="spawn_x" default="4.5" />
     <arg name="spawn_y" default="2.0" />
-    <arg name="spawn_z" default="1.0" />
+    <arg name="spawn_z" default="0.25" />
     <arg name="spawn_yaw" default="0.0" />
     <arg name="rviz" default="true" />
     <!-- Optional depth->scan helper pipeline; disable to isolate lidar-only baseline behavior. -->
     <arg name="use_depth_scan_pipeline" default="false" />
-    <!-- Optional EKF overlay for visual odometry / RGB-D odom fusion; disabled by default. -->
-    <arg name="use_vio_odom" default="false" />
     <!-- Optional RTAB-Map RGB-D odometry publisher for /visual_odom (used by EKF odom1). -->
     <arg name="use_rtabmap_odom" default="false" />
     <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
@@ -76,13 +74,8 @@
         <remap from="imu" to="/imu" />
         <remap from="odom" to="/visual_odom" />
     </node>
-    <node unless="$(var use_vio_odom)" pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+    <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
         <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
-        <param name="use_sim_time" value="true" />
-    </node>
-    <node if="$(var use_vio_odom)" pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
-        <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
-        <param from="$(find-pkg-share maya_bringup)/config/ekf_vio_overlay.yaml" />
         <param name="use_sim_time" value="true" />
     </node>
     <include file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">

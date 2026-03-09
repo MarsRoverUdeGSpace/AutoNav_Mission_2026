@@ -1,5 +1,25 @@
 ---
 
+## 8. Current HW Baseline Command (2026-02-27)
+
+Use this command as the minimal Jetson hardware baseline for reliability testing with `tools/nav2_reliability_trials.sh`:
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false rviz:=false \
+  use_zed:=true zed_camera_model:=zed2i zed_enable_ipc:=false \
+  odom_topic:=/zed/zed_node/odom \
+  imu_topic:=/imu/data \
+  use_ld19:=true lidar_port:=/dev/ttyUSB1 \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false
+```
+
+Intent:
+- keep ArUco/YOLO disabled during core localization/navigation reliability runs,
+- isolate LD19 + ZED odom/IMU + EKF + SLAM/Nav2 behavior.
+
 ## 8. Postmortem – Failed SIM Attempt (2026-02-18)
 
 This section records a failed tuning cycle so future work does not repeat it.
@@ -327,6 +347,27 @@ This section records a failed tuning cycle so future work does not repeat it.
 - Keep optional integrations disabled by default until they produce valid data:
   - RTAB-Map/VIO, depth scan pipeline, future GNSS overlays.
 - Prefer paired/within-trial diagnostics (easy vs stress) when analyzing turning regressions to reduce startup/transient confounds.
+
+### 8.24 Manual SIM Turning Checkpoint (2026-03-08)
+
+- Standard SIM + autonomy entrypoint remains:
+  - `ros2 launch maya_bringup maya.launch.xml`
+- Manual operator validation after rebuilding and launching this baseline showed:
+  - simulation real-time factor improved materially (operator observed roughly `30% -> 70%`),
+  - manual driving and turning are noticeably cleaner than the prior baseline,
+  - but in-place / tighter turns still cause SLAM drift and partial map overlap.
+- Current interpretation:
+  - the recent `slam_toolbox` parameter expansion improved scan-matching behavior,
+  - however the remaining failure is **not** solved by adding more generic odometry sources alone,
+  - the likely remaining issue is local yaw / turn prior quality in `wheel odom + IMU + EKF`, especially covariance realism and relative weighting during rotation.
+- Current architecture reminder:
+  - with the present 2D lidar baseline (`/scan`), the active stack is still `wheel-like odom + IMU -> EKF -> slam_toolbox/Nav2`,
+  - this is **not** true LIO,
+  - for the current rover baseline, prioritize a robust 2D stack before adding any optional LIO path.
+- Required next debugging order:
+  1. verify `/odom`, `/imu`, and `/odometry/filtered` covariance fields are non-zero and realistic,
+  2. validate turn behavior of `odom -> base_footprint` independently of SLAM,
+  3. only after odom/yaw quality is characterized, continue additional SLAM tuning.
 
 # AGENTS – Autonomous Navigation Mission (Maya Rover)
 

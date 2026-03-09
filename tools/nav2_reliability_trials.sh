@@ -24,21 +24,58 @@ WARMUP_NO_PROGRESS_TIMEOUT_SEC="${WARMUP_NO_PROGRESS_TIMEOUT_SEC:-12}"
 GOAL_TIMEOUT_SEC="${GOAL_TIMEOUT_SEC:-120}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-120}"
 WARMUP_TIMEOUT_SEC="${WARMUP_TIMEOUT_SEC:-60}"
+WARMUP_ACCEPT_MIN_DISTANCE_M="${WARMUP_ACCEPT_MIN_DISTANCE_M:-2.0}"
 POST_WARMUP_SETTLE_SEC="${POST_WARMUP_SETTLE_SEC:-1}"
 POST_WARMUP_TURN_DEG="${POST_WARMUP_TURN_DEG:-0}"
 POST_WARMUP_TURN_CMD_VEL_Z="${POST_WARMUP_TURN_CMD_VEL_Z:-0.6}"
 POST_WARMUP_TURN_TIMEOUT_SEC="${POST_WARMUP_TURN_TIMEOUT_SEC:-25}"
+POST_WARMUP_TURN_STAGE_TIMEOUT_SEC="${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC:-60}"
 POST_WARMUP_TURN_SETTLE_SEC="${POST_WARMUP_TURN_SETTLE_SEC:-1}"
 POST_WARMUP_TURN_TOL_DEG="${POST_WARMUP_TURN_TOL_DEG:-10}"
 DUAL_PHASE_TURN_STRESS_TEST="${DUAL_PHASE_TURN_STRESS_TEST:-false}"
 PHASE_A_POST_WARMUP_TURN_DEG="${PHASE_A_POST_WARMUP_TURN_DEG:-0}"
 PHASE_B_POST_WARMUP_TURN_DEG="${PHASE_B_POST_WARMUP_TURN_DEG:-90}"
+PHASE_B_TURN_SWEEP_ENABLE="${PHASE_B_TURN_SWEEP_ENABLE:-false}"
+PHASE_B_TURN_SWEEP_START_NUM="${PHASE_B_TURN_SWEEP_START_NUM:-1}"
+PHASE_B_TURN_SWEEP_END_NUM="${PHASE_B_TURN_SWEEP_END_NUM:-32}"
+PHASE_B_TURN_SWEEP_DEN="${PHASE_B_TURN_SWEEP_DEN:-32}"
+PHASE_B_TURN_SWEEP_REPEATS="${PHASE_B_TURN_SWEEP_REPEATS:-3}"
+PHASE_B_TURN_SWEEP_SIGN="${PHASE_B_TURN_SWEEP_SIGN:-1}"
+START_SANITY_GUARD="${START_SANITY_GUARD:-true}"
+REQUIRE_MAP_START_TF="${REQUIRE_MAP_START_TF:-true}"
+START_SANITY_MAX_ABS_Z_M="${START_SANITY_MAX_ABS_Z_M:-0.15}"
+START_SANITY_MAX_ABS_ROLL_DEG="${START_SANITY_MAX_ABS_ROLL_DEG:-20.0}"
+START_SANITY_MAX_ABS_PITCH_DEG="${START_SANITY_MAX_ABS_PITCH_DEG:-20.0}"
+PRECHECK_COMPUTE_PATH="${PRECHECK_COMPUTE_PATH:-true}"
+PRECHECK_TIMEOUT_SEC="${PRECHECK_TIMEOUT_SEC:-20}"
 COLLISION_STATE_CAPTURE_SEC="${COLLISION_STATE_CAPTURE_SEC:-90}"
 RVIZ="${RVIZ:-false}"
+CLEANUP_DEBUG="${CLEANUP_DEBUG:-false}"
+STRICT_CLEANUP="${STRICT_CLEANUP:-false}"
+
+CLEANUP_GRACEFUL_PATTERN="ros2 launch maya_bringup|gz sim|ros_gz_sim|rviz2|slam_toolbox|controller_server|planner_server|bt_navigator|behavior_server|smoother_server|velocity_smoother|lifecycle_manager|map_server|amcl|waypoint_follower|collision_monitor|ekf_node|robot_state_publisher|component_container"
+CLEANUP_FORCE_PATTERN="$CLEANUP_GRACEFUL_PATTERN"
 
 tmpdir="$(mktemp -d)"
 diag_root="$tmpdir/nav2_reliability"
 mkdir -p "$diag_root"
+
+if [[ "$PHASE_B_TURN_SWEEP_ENABLE" == "true" ]]; then
+  levels=$((PHASE_B_TURN_SWEEP_END_NUM - PHASE_B_TURN_SWEEP_START_NUM + 1))
+  required_trials_for_sweep=$((levels * PHASE_B_TURN_SWEEP_REPEATS))
+  if (( levels <= 0 || PHASE_B_TURN_SWEEP_REPEATS <= 0 || PHASE_B_TURN_SWEEP_DEN <= 0 )); then
+    echo "Invalid PHASE_B_TURN_SWEEP_* configuration." >&2
+    exit 1
+  fi
+  if [[ "$DUAL_PHASE_TURN_STRESS_TEST" != "true" ]]; then
+    echo "PHASE_B_TURN_SWEEP_ENABLE=true requires DUAL_PHASE_TURN_STRESS_TEST=true." >&2
+    exit 1
+  fi
+  if (( TRIALS > required_trials_for_sweep )); then
+    echo "TRIALS=$TRIALS exceeds configured phase-B sweep capacity ($required_trials_for_sweep)." >&2
+    exit 1
+  fi
+fi
 
 cleanup_global() {
   if [[ -n "${LAUNCH_PID:-}" ]]; then
@@ -146,7 +183,14 @@ lookup_gz_world_topic() {
 
 get_maya_pose() {
   local world_topic="$1"
-  gz topic -e -n 1 -t "$world_topic" | awk '
+  local snapshot=""
+
+  # Guard against rare Gazebo CLI stalls: never block indefinitely while
+  # sampling one dynamic pose message.
+  snapshot="$(timeout 2s gz topic -e -n 1 -t "$world_topic" 2>/dev/null || true)"
+  [[ -z "$snapshot" ]] && return 1
+
+  awk '
     $0 ~ /name: "maya"/ {in_block=1}
     in_block && $1 ~ /^position/ {pos=1}
     in_block && pos && $1=="x:" {x=$2}
@@ -157,7 +201,7 @@ get_maya_pose() {
     in_block && ori && $1=="y:" {qy=$2}
     in_block && ori && $1=="z:" {qz=$2}
     in_block && ori && $1=="w:" {qw=$2; ori=0; in_block=0}
-    END {printf("%s %s %s %s %s %s %s\n", x, y, z, qx, qy, qz, qw)}'
+    END {printf("%s %s %s %s %s %s %s\n", x, y, z, qx, qy, qz, qw)}' <<< "$snapshot"
 }
 
 get_maya_pose_retry() {
@@ -205,6 +249,82 @@ print(d)
 PY
 }
 
+compute_phase_b_turn_deg() {
+  local trial="$1"
+  if [[ "$PHASE_B_TURN_SWEEP_ENABLE" != "true" ]]; then
+    printf '%s\n' "$PHASE_B_POST_WARMUP_TURN_DEG"
+    return 0
+  fi
+
+  local levels=$((PHASE_B_TURN_SWEEP_END_NUM - PHASE_B_TURN_SWEEP_START_NUM + 1))
+  if (( levels <= 0 || PHASE_B_TURN_SWEEP_REPEATS <= 0 || PHASE_B_TURN_SWEEP_DEN <= 0 )); then
+    echo "Invalid PHASE_B_TURN_SWEEP_* configuration." >&2
+    return 1
+  fi
+
+  local required_trials=$((levels * PHASE_B_TURN_SWEEP_REPEATS))
+  if (( trial > required_trials )); then
+    echo "Trial $trial exceeds configured phase-B sweep capacity ($required_trials)." >&2
+    return 1
+  fi
+
+  local idx=$((trial - 1))
+  local level_idx=$((idx / PHASE_B_TURN_SWEEP_REPEATS))
+  local turn_num=$((PHASE_B_TURN_SWEEP_START_NUM + level_idx))
+  python3 - <<'PY' "$turn_num" "$PHASE_B_TURN_SWEEP_DEN" "$PHASE_B_TURN_SWEEP_SIGN"
+import sys
+num = float(sys.argv[1])
+den = float(sys.argv[2])
+sign = float(sys.argv[3])
+print(sign * num * 180.0 / den)
+PY
+}
+
+sanity_check_gz_pose_start() {
+  local pose_file="$1"
+  python3 - <<'PY' "$pose_file" "$START_SANITY_MAX_ABS_Z_M" "$START_SANITY_MAX_ABS_ROLL_DEG" "$START_SANITY_MAX_ABS_PITCH_DEG"
+import math
+import sys
+from pathlib import Path
+
+pose_path = Path(sys.argv[1])
+max_abs_z = float(sys.argv[2])
+max_abs_roll_deg = float(sys.argv[3])
+max_abs_pitch_deg = float(sys.argv[4])
+
+txt = pose_path.read_text().strip().split()
+if len(txt) < 7:
+    print("invalid pose sample", file=sys.stderr)
+    raise SystemExit(1)
+
+x, y, z, qx, qy, qz, qw = map(float, txt[:7])
+
+# quaternion -> roll, pitch, yaw
+sinr_cosp = 2.0 * (qw * qx + qy * qz)
+cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+roll = math.atan2(sinr_cosp, cosr_cosp)
+
+sinp = 2.0 * (qw * qy - qz * qx)
+if abs(sinp) >= 1:
+    pitch = math.copysign(math.pi / 2.0, sinp)
+else:
+    pitch = math.asin(sinp)
+
+roll_deg = math.degrees(roll)
+pitch_deg = math.degrees(pitch)
+
+if abs(z) > max_abs_z:
+    print(f"start pose z out of bounds: z={z:.3f}, limit={max_abs_z}", file=sys.stderr)
+    raise SystemExit(1)
+if abs(roll_deg) > max_abs_roll_deg:
+    print(f"start pose roll out of bounds: roll={roll_deg:.2f} deg, limit={max_abs_roll_deg}", file=sys.stderr)
+    raise SystemExit(1)
+if abs(pitch_deg) > max_abs_pitch_deg:
+    print(f"start pose pitch out of bounds: pitch={pitch_deg:.2f} deg, limit={max_abs_pitch_deg}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 start_sim() {
   local trial_dir="$1"
   local ros_log_dir="$trial_dir/roslog"
@@ -222,6 +342,94 @@ stop_sim() {
     wait "$LAUNCH_PID" >/dev/null 2>&1 || true
     unset LAUNCH_PID
   fi
+}
+
+cleanup_debug_log() {
+  if [[ "$CLEANUP_DEBUG" == "true" ]]; then
+    echo "$@"
+  fi
+}
+
+kill_matching_processes() {
+  local signal="$1"
+  local pattern="$2"
+  local stage="$3"
+  local self_pid="$$"
+  local parent_pid="$PPID"
+  local self_pgid
+  self_pgid="$(ps -o pgid= "$self_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  while read -r pid cmdline; do
+    [[ -z "${pid:-}" ]] && continue
+    [[ "$pid" == "$self_pid" || "$pid" == "$parent_pid" ]] && continue
+    [[ "${cmdline:-}" == *"tools/nav2_reliability_trials.sh"* ]] && continue
+    [[ "${cmdline:-}" == *"ros2cli.daemon.daemonize"* ]] && continue
+    if [[ -n "${self_pgid:-}" ]]; then
+      pid_pgid="$(ps -o pgid= "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+      [[ -n "${pid_pgid:-}" && "$pid_pgid" == "$self_pgid" ]] && continue
+    fi
+    cleanup_debug_log "Cleanup [$stage]: kill -${signal} pid=$pid cmd=${cmdline:-<unknown>}"
+    kill "-$signal" "$pid" >/dev/null 2>&1 || true
+  done < <(pgrep -af "$pattern" || true)
+}
+
+list_stale_processes() {
+  local pattern="$1"
+  local self_pid="$$"
+  local parent_pid="$PPID"
+  local self_pgid
+  self_pgid="$(ps -o pgid= "$self_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  local stale=""
+  while read -r pid cmdline; do
+    [[ -z "${pid:-}" ]] && continue
+    [[ "$pid" == "$self_pid" || "$pid" == "$parent_pid" ]] && continue
+    [[ "${cmdline:-}" == *"tools/nav2_reliability_trials.sh"* ]] && continue
+    [[ "${cmdline:-}" == *"ros2cli.daemon.daemonize"* ]] && continue
+    if [[ -n "${self_pgid:-}" ]]; then
+      pid_pgid="$(ps -o pgid= "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+      [[ -n "${pid_pgid:-}" && "$pid_pgid" == "$self_pgid" ]] && continue
+    fi
+    stale+="${pid} ${cmdline:-<unknown>}"$'\n'
+  done < <(pgrep -af "$pattern" || true)
+  printf '%s' "$stale"
+}
+
+verify_clean_state() {
+  local stage="$1"
+  local stale
+  stale="$(list_stale_processes "$CLEANUP_FORCE_PATTERN")"
+  if [[ -n "$stale" ]]; then
+    echo "Cleanup [$stage]: stale processes remain after cleanup:" >&2
+    printf '%s' "$stale" >&2
+    if [[ "$STRICT_CLEANUP" == "true" ]]; then
+      echo "Cleanup [$stage]: STRICT_CLEANUP=true, treating stale state as failure." >&2
+      return 1
+    fi
+    return 0
+  fi
+  cleanup_debug_log "Cleanup [$stage]: no stale processes detected."
+  return 0
+}
+
+run_cleanup_cycle() {
+  local stage="$1"
+  echo "Cleanup [$stage]: stopping stale ROS/Gazebo processes and resetting ROS 2 daemon."
+
+  # 1) Stop known Maya bringup processes gracefully.
+  kill_matching_processes "INT" "$CLEANUP_GRACEFUL_PATTERN" "$stage"
+  sleep 3
+
+  # 2) Escalate if anything is still alive.
+  kill_matching_processes "TERM" "$CLEANUP_FORCE_PATTERN" "$stage"
+  sleep 2
+  kill_matching_processes "KILL" "$CLEANUP_FORCE_PATTERN" "$stage"
+
+  # 3) Reset ROS 2 daemon to avoid stale graph state.
+  ros2 daemon stop >/dev/null 2>&1 || true
+  pkill -f "_ros2_daemon" >/dev/null 2>&1 || true
+  sleep 1
+  ros2 daemon start >/dev/null 2>&1 || true
+
+  verify_clean_state "$stage"
 }
 
 capture_tf_pose() {
@@ -267,6 +475,7 @@ run_nav_phase() {
   warmup_last_progress_sec=$SECONDS
   warmup_last_progress_print_sec=$SECONDS
   warmup_best_dist="0.0"
+  warmup_target_reached=0
   spawn_ref_captured=0
   : >"$phase_dir/warmup_progress.log"
   while :; do
@@ -301,6 +510,7 @@ print("1" if float(sys.argv[1]) >= float(sys.argv[2]) else "0")
 PY
 )"
       if [[ "$warmup_reached" == "1" ]]; then
+        warmup_target_reached=1
         break
       fi
     fi
@@ -326,13 +536,25 @@ PY
 
   kill -INT "$WARMUP_PUB_PID" >/dev/null 2>&1 || true
   wait "$WARMUP_PUB_PID" >/dev/null 2>&1 || true
-  ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+  timeout 3s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
   sleep "$POST_WARMUP_SETTLE_SEC"
   read_map_metadata "$phase_dir/map_metadata_after_warmup.txt"
+
+  warmup_accept_ok="$(python3 - <<'PY' "$warmup_best_dist" "$WARMUP_ACCEPT_MIN_DISTANCE_M"
+import sys
+print("1" if float(sys.argv[1]) >= float(sys.argv[2]) else "0")
+PY
+)"
+  if [[ "$warmup_accept_ok" != "1" ]]; then
+    echo "Trial $trial [$phase_label]: warmup rejected (best=${warmup_best_dist}m < min=${WARMUP_ACCEPT_MIN_DISTANCE_M}m)." >&2
+    return 1
+  fi
+
   echo "Trial $trial [$phase_label]: warmup done (best Gazebo progress=${warmup_best_dist}m)."
 
   # Optional heading stress test before capturing return-leg start pose.
   if [[ "${phase_turn_deg}" != "0" && "${phase_turn_deg}" != "0.0" ]]; then
+    turn_stage_start_sec=$SECONDS
     target_turn_rad="$(python3 - <<'PY' "$phase_turn_deg"
 import math
 import sys
@@ -381,6 +603,10 @@ PY
       turn_start_sec=$SECONDS
       turn_done=0
       while :; do
+        if (( SECONDS - turn_stage_start_sec >= POST_WARMUP_TURN_STAGE_TIMEOUT_SEC )); then
+          echo "Trial $trial [$phase_label]: post-warmup turn stage watchdog timeout (${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC}s)." >&2
+          break
+        fi
         if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_turn_current.txt"; then
           current_yaw="$(python3 - <<'PY' "$phase_dir/gz_pose_turn_current.txt"
 import math
@@ -424,8 +650,8 @@ PY
       done
 
       kill -INT "$TURN_PUB_PID" >/dev/null 2>&1 || true
-      wait "$TURN_PUB_PID" >/dev/null 2>&1 || true
-      ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+      timeout 2s bash -lc 'wait "$1" >/dev/null 2>&1 || true' _ "$TURN_PUB_PID" || true
+      timeout 3s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
       sleep "$POST_WARMUP_TURN_SETTLE_SEC"
       if [[ "$turn_done" -eq 1 ]]; then
         echo "Trial $trial [$phase_label]: post-warmup turn complete."
@@ -442,6 +668,21 @@ PY
   capture_tf_pose map base_footprint "$phase_dir/tf_map_base_start.txt" || true
   capture_tf_pose odom base_footprint "$phase_dir/tf_odom_base_start.txt" || true
   get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_start.txt" || true
+
+  if [[ "$REQUIRE_MAP_START_TF" == "true" && ! -s "$phase_dir/tf_map_base_start.txt" ]]; then
+    echo "Trial $trial [$phase_label]: missing map->base_footprint start TF sample." >&2
+    return 1
+  fi
+  if [[ "$START_SANITY_GUARD" == "true" ]]; then
+    if [[ ! -s "$phase_dir/gz_pose_start.txt" ]]; then
+      echo "Trial $trial [$phase_label]: missing Gazebo start pose for sanity check." >&2
+      return 1
+    fi
+    if ! sanity_check_gz_pose_start "$phase_dir/gz_pose_start.txt"; then
+      echo "Trial $trial [$phase_label]: rejected by start sanity guard." >&2
+      return 1
+    fi
+  fi
 
   if [[ ! -s "$phase_dir/tf_map_base_spawn_ref.txt" ]]; then
     echo "Trial $trial [$phase_label]: could not capture a map-frame return reference during warmup" >&2
@@ -460,6 +701,22 @@ PY
   fi
 
   goal_yaml="{pose: {header: {frame_id: map}, pose: {position: {x: ${gx}, y: ${gy}, z: 0.0}, orientation: {x: ${gqx:-0.0}, y: ${gqy:-0.0}, z: ${gqz}, w: ${gqw}}}}}"
+  compute_goal_yaml="{goal: {header: {frame_id: map}, pose: {position: {x: ${gx}, y: ${gy}, z: 0.0}, orientation: {x: ${gqx:-0.0}, y: ${gqy:-0.0}, z: ${gqz}, w: ${gqw}}}}, planner_id: '', use_start: false}"
+  if [[ "$PRECHECK_COMPUTE_PATH" == "true" ]]; then
+    if timeout "${PRECHECK_TIMEOUT_SEC}s" ros2 action send_goal /compute_path_to_pose nav2_msgs/action/ComputePathToPose "$compute_goal_yaml" >"$phase_dir/compute_path_precheck.txt" 2>&1; then
+      true
+    else
+      echo "Trial $trial [$phase_label]: compute_path precheck command timeout/failure." >&2
+      return 1
+    fi
+    precheck_status="$(grep -m1 "Goal finished with status:" "$phase_dir/compute_path_precheck.txt" | awk -F': ' '{print $2}' || true)"
+    precheck_code="$(grep -m1 -E '^[[:space:]]*error_code:' "$phase_dir/compute_path_precheck.txt" | awk '{print $2}' || true)"
+    if [[ "${precheck_status:-}" != "SUCCEEDED" || "${precheck_code:-}" != "0" ]]; then
+      echo "Trial $trial [$phase_label]: compute_path precheck failed (status=${precheck_status:-unknown}, error_code=${precheck_code:-unknown})." >&2
+      return 1
+    fi
+  fi
+
   echo "Trial $trial [$phase_label]: sending NavigateToPose goal (return to recorded start pose)."
   if timeout "${GOAL_TIMEOUT_SEC}s" ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "$goal_yaml" >"$phase_dir/nav_goal.txt" 2>&1; then
     true
@@ -493,28 +750,41 @@ for trial in $(seq 1 "$TRIALS"); do
   mkdir -p "$trial_dir"
   echo "=== Trial $trial/$TRIALS ==="
 
+  run_cleanup_cycle "trial_${trial}_pre"
+  if ! verify_clean_state "trial_${trial}_pre_verify"; then
+    echo "Trial $trial: stale process state before startup; skipping trial." >&2
+    continue
+  fi
   start_sim "$trial_dir"
 
-  wait_for_topic /clock "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /clock" >&2; stop_sim; continue; }
-  wait_for_topic /scan "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /scan" >&2; stop_sim; continue; }
-  wait_for_topic /odom "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /odom" >&2; stop_sim; continue; }
-  wait_for_topic /odometry/filtered "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /odometry/filtered" >&2; stop_sim; continue; }
-  wait_for_topic /map "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /map" >&2; stop_sim; continue; }
-  wait_for_active_nav2 "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: Nav2 bt_navigator not active" >&2; stop_sim; continue; }
+  wait_for_topic /clock "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /clock" >&2; stop_sim; run_cleanup_cycle "trial_${trial}_startup_fail"; continue; }
+  wait_for_topic /scan "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /scan" >&2; stop_sim; run_cleanup_cycle "trial_${trial}_startup_fail"; continue; }
+  wait_for_topic /odom "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /odom" >&2; stop_sim; run_cleanup_cycle "trial_${trial}_startup_fail"; continue; }
+  wait_for_topic /odometry/filtered "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /odometry/filtered" >&2; stop_sim; run_cleanup_cycle "trial_${trial}_startup_fail"; continue; }
+  wait_for_topic /map "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: timed out waiting /map" >&2; stop_sim; run_cleanup_cycle "trial_${trial}_startup_fail"; continue; }
+  wait_for_active_nav2 "$STARTUP_TIMEOUT_SEC" || { echo "Trial $trial: Nav2 bt_navigator not active" >&2; stop_sim; run_cleanup_cycle "trial_${trial}_startup_fail"; continue; }
 
   world_topic="$(lookup_gz_world_topic || true)"
   if [[ -z "$world_topic" ]]; then
     echo "Trial $trial: could not find Gazebo dynamic pose topic" >&2
     stop_sim
+    run_cleanup_cycle "trial_${trial}_startup_fail"
     continue
   fi
   printf '%s\n' "$world_topic" >"$trial_dir/gz_world_topic.txt"
 
   phase_failed=0
   if [[ "$DUAL_PHASE_TURN_STRESS_TEST" == "true" ]]; then
+    phase_b_turn_this_trial="$(compute_phase_b_turn_deg "$trial")" || {
+      echo "Trial $trial: failed to resolve phase-B turn schedule." >&2
+      phase_failed=1
+    }
+    if [[ "$phase_failed" -eq 0 ]]; then
+      printf '%s\n' "$phase_b_turn_this_trial" >"$trial_dir/phase_b_turn_deg_scheduled.txt"
+    fi
     run_nav_phase "$trial" "$world_topic" "$trial_dir/phase_a" "phase_a_easy" "$PHASE_A_POST_WARMUP_TURN_DEG" || phase_failed=1
     if [[ "$phase_failed" -eq 0 ]]; then
-      run_nav_phase "$trial" "$world_topic" "$trial_dir/phase_b" "phase_b_turn_stress" "$PHASE_B_POST_WARMUP_TURN_DEG" || phase_failed=1
+      run_nav_phase "$trial" "$world_topic" "$trial_dir/phase_b" "phase_b_turn_stress" "$phase_b_turn_this_trial" || phase_failed=1
     fi
   else
     run_nav_phase "$trial" "$world_topic" "$trial_dir" "single" "$POST_WARMUP_TURN_DEG" || phase_failed=1
@@ -525,6 +795,10 @@ for trial in $(seq 1 "$TRIALS"); do
   fi
   echo "Trial $trial: complete, shutting down simulation."
   stop_sim
+  run_cleanup_cycle "trial_${trial}_post"
+  if ! verify_clean_state "trial_${trial}_post_verify"; then
+    echo "Trial $trial: stale process state remains after post-trial cleanup." >&2
+  fi
 done
 
 python3 - <<'PY' "$diag_root" "$TRIALS" "$WARMUP_FORWARD_DISTANCE_M"

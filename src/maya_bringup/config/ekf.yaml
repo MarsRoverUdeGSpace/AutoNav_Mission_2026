@@ -10,6 +10,8 @@ ekf_filter_node:
     base_link_frame: base_footprint
     world_frame: odom
 
+    # Primary local odometry prior.
+    # In SIM this is Gazebo DiffDrive odom; on HW this should be wheel odom.
     odom0: /odom
     odom0_config: [true,  true,  false,
                    false, false, true,
@@ -19,6 +21,8 @@ ekf_filter_node:
     odom0_differential: false
     odom0_relative: false
 
+    # IMU contributes heading and yaw rate only in the current planar EKF.
+    # Optional VIO/LIO overlays can add odom1/odom2 in separate files.
     imu0: /imu
     imu0_config: [false, false, false,
                   false, false, true,
