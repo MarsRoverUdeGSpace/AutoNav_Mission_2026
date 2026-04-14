@@ -37,6 +37,12 @@
         <param name="output_topic" value="/scan_fixed" />
         <param name="frame_id" value="lidar_link" />
     </node>
+    <node pkg="maya_bringup" exec="sim_covariance_relay.py" name="sim_covariance_relay" output="screen">
+        <param name="odom_input_topic" value="/odom" />
+        <param name="odom_output_topic" value="/odom_with_covariance" />
+        <param name="imu_input_topic" value="/imu" />
+        <param name="imu_output_topic" value="/imu_with_covariance" />
+    </node>
     <node if="$(var use_depth_scan_pipeline)" pkg="pointcloud_to_laserscan" exec="pointcloud_to_laserscan_node" name="depth_cloud_to_scan" output="screen">
         <param name="target_frame" value="base_footprint" />
         <param name="transform_tolerance" value="0.05" />
@@ -76,6 +82,8 @@
     </node>
     <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
         <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
+        <param name="odom0" value="/odom_with_covariance" />
+        <param name="imu0" value="/imu_with_covariance" />
         <param name="use_sim_time" value="true" />
     </node>
     <include file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">

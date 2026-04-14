@@ -369,6 +369,109 @@ This section records a failed tuning cycle so future work does not repeat it.
   2. validate turn behavior of `odom -> base_footprint` independently of SLAM,
   3. only after odom/yaw quality is characterized, continue additional SLAM tuning.
 
+### 8.25 Turn Drift Diagnostic Result (2026-03-08)
+
+- Added focused turn diagnostic tool:
+  - `bash tools/turn_drift_diagnostic.sh`
+- Current scripted 180-degree turn result established a stronger root-cause signal than the reliability harness alone:
+  - Gazebo truth rotation reached only about `57 deg` before timeout,
+  - `/odom` final relative yaw was about `-10.8 deg`,
+  - `/odometry/filtered` final relative yaw was about `36.7 deg`,
+  - `/imu` final relative yaw was about `19.6 deg`,
+  - mean absolute yaw error vs Gazebo remained very large:
+    - `/odom` about `95 deg`
+    - `/odometry/filtered` about `51 deg`
+    - `/imu` about `49 deg`
+- Covariance diagnosis from the same run:
+  - `/odom.pose.covariance[yaw] = 0`
+  - `/imu.orientation_covariance[yaw] = 0`
+  - `/odometry/filtered.pose.covariance[yaw]` remained unrealistically tiny (`~5e-10`)
+- Interpretation:
+  - remaining turn drift is confirmed to be primarily a **local odom / IMU / EKF yaw quality problem**, not just a `slam_toolbox` tuning problem,
+  - zero or near-zero source covariance means EKF is overconfident during rotation,
+  - if Gazebo truth turn itself is limited while odom yaw diverges badly, check simulated drive kinematics before further SLAM tuning.
+- Immediate corrective action taken:
+  - corrected Gazebo DiffDrive left/right joint grouping in `src/maya_description/urdf/mobile_base_gazebo.xacro`
+  - previous plugin wiring had left/right sides swapped, which is a plausible source of corrupted turning odometry in SIM
+- Updated debugging priority after this checkpoint:
+  1. re-run `tools/turn_drift_diagnostic.sh` after the DiffDrive fix,
+  2. if yaw error drops materially, continue with covariance realism fixes,
+  3. only after local yaw behavior is sane should further `slam_toolbox` tuning resume.
+
+### 8.26 Turn Drift Baseline Isolation Outcome (2026-03-12)
+
+- The turn-drift investigation added two new SIM-side baseline tools:
+  - `src/maya_bringup/scripts/sim_covariance_relay.py`
+  - `tools/turn_drift_diagnostic.sh`
+- The current SIM launch path now routes EKF through relayed topics with non-zero covariances:
+  - `/odom_with_covariance`
+  - `/imu_with_covariance`
+- EKF local fusion was adjusted so raw wheel odom no longer contributes absolute yaw pose directly; IMU still contributes heading and yaw rate.
+- Sim model changes retained in the current baseline:
+  - DiffDrive left/right joint grouping corrected in `src/maya_description/urdf/mobile_base_gazebo.xacro`
+  - wheel contact collision changed from STL meshes to cylinders in `src/maya_description/urdf/mobile_base.xacro`
+  - explicit wheel friction/slip parameters added in `src/maya_description/urdf/mobile_base_gazebo.xacro`
+  - wheel-axis normalization experiment was rejected and reverted; right-wheel mirrored axis remains required in the current model
+- Diagnostic conclusion:
+  - on `empty.sdf`, fused `/odometry_filtered` became materially better and can track Gazebo truth closely enough to treat the flat-world local odom baseline as improved
+  - on `random_world.sdf`, pure in-place turning remains unstable and terrain/contact dominated; rough-terrain turn drift is **not** solved by the current baseline
+- Operational interpretation:
+  - the current baseline is good enough to checkpoint improvements in diagnostics, covariance realism, and flat-world turn estimation
+  - but random heightmap turning should still be treated as a stress case, not as a resolved capability
+- Recommended validation split going forward:
+  1. use `empty.sdf` for local odom / EKF turn-isolation tests
+  2. use `random_world.sdf` for realistic turn-stress and return-to-reference tests
+  3. use `tools/nav2_reliability_trials.sh` for acceptance metrics, not pure-turn-only diagnostics on rough terrain
+
+### 8.27 Manual Nav2 Spin Checkpoint (2026-04-14)
+
+- Manual testing confirmed that Nav2 `Spin` is the correct behavior to isolate yaw-turn execution.
+  - Do **not** use `NavigateToPose` as the primary test for a pure in-place 180-degree turn.
+  - `NavigateToPose` adds planner / BT / goal-feasibility failure paths that obscure yaw-specific diagnosis.
+- Current validated manual test command:
+
+```bash
+ros2 action send_goal /spin nav2_msgs/action/Spin "{
+  target_yaw: 3.1415927,
+  time_allowance: {sec: 60, nanosec: 0}
+}" --feedback
+```
+
+- What the manual `Spin` tests showed consistently:
+  - action status often returns `SUCCEEDED` with `error_code: 0`,
+  - `angular_distance_traveled` feedback reaches about `-3.16 rad` (roughly `181 deg`),
+  - but the final settled heading from:
+    - `/odometry/filtered`,
+    - `tf odom -> base_footprint`,
+    - `tf map -> base_footprint`,
+    - `/imu_with_covariance`
+    all agree on a final yaw around `163 deg` to `165 deg` for a commanded `180 deg` spin.
+- Important interpretation:
+  - the localization stack is internally consistent after the maneuver,
+  - there is **not** currently evidence of a post-spin settling drift between EKF / TF / IMU,
+  - the remaining mismatch is between Nav2 `Spin`'s reported traveled angle and the final estimated heading.
+- Operational workaround established from manual tests:
+  - commanding about `165 deg` (`180 deg - 15 deg`) produced the closest observed final heading to a true/visual `180 deg` turn.
+  - Treat this as an **empirical SIM workaround**, not as confirmed ground truth.
+- What this does **not** prove yet:
+  - it does **not** yet prove whether the rover physically under-rotates or whether the final yaw estimate is biased during the maneuver,
+  - because full Gazebo truth orientation for the same post-spin sample has not yet been captured and compared.
+- Required next diagnostic to close the loop:
+  1. run one clean `Spin` test,
+  2. immediately capture:
+     - `/odometry/filtered`,
+     - `/imu_with_covariance`,
+     - `tf odom -> base_footprint`,
+     - full Gazebo dynamic pose block for `maya` including orientation quaternion,
+  3. compare final estimated yaw against Gazebo truth yaw.
+- Practical rule going forward:
+  - for Nav2 yaw-behavior testing, use `Spin`,
+  - for low-level drivetrain / odom isolation, raw `/cmd_vel` turn tests remain useful,
+  - do not mix those two conclusions in one metric.
+- Script status note:
+  - `tools/nav2_reliability_trials.sh` was partially adapted to use `Spin` in the post-warmup turn stage,
+  - but this should be treated as **experimental** until the manual `Spin` behavior is fully understood and the final-heading vs feedback mismatch is explained.
+
 # AGENTS – Autonomous Navigation Mission (Maya Rover)
 
 These instructions apply to the entire `AutoNav_Mission_2026` repository.

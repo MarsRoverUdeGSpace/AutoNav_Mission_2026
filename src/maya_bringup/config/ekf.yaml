@@ -12,9 +12,11 @@ ekf_filter_node:
 
     # Primary local odometry prior.
     # In SIM this is Gazebo DiffDrive odom; on HW this should be wheel odom.
+    # Keep raw odom yaw pose out of the planar EKF: turning diagnostics show it is
+    # the weakest source, so odom contributes x/y and velocity while IMU carries heading.
     odom0: /odom
     odom0_config: [true,  true,  false,
-                   false, false, true,
+                   false, false, false,
                    true,  false, false,
                    false, false, true,
                    false, false, false]

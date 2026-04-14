@@ -68,9 +68,11 @@
       </visual>
 
       <collision>
-          <origin xyz="0 0 0" rpy="0 0 0"/>
+        <!-- Use a simple cylinder for wheel-ground contact in simulation.
+             Mesh collisions make skid-steer contact unstable and corrupt turning. -->
+        <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry>
-          <mesh filename="${mesh}" scale="${mesh_scale} ${mesh_scale} ${mesh_scale}"/>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
         </geometry>
       </collision>
     </link>

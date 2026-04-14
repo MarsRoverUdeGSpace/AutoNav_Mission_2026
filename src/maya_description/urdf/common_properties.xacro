@@ -114,8 +114,8 @@
   </xacro:macro>
 
   <!-- Default wheel spin axes.
-       Left wheels use positive Z, right wheels use negative Z
-       to compensate CAD mirroring. -->
+       Right wheels keep the mirrored sign required by the current Maya CAD and
+       Gazebo drive setup. Normalizing the sign regressed actual body rotation. -->
   <xacro:property name="wheel_axis_left"  value="0 0 1"/>
   <xacro:property name="wheel_axis_right" value="0 0 -1"/>
 

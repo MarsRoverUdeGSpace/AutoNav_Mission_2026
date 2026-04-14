@@ -27,6 +27,7 @@ WARMUP_TIMEOUT_SEC="${WARMUP_TIMEOUT_SEC:-60}"
 WARMUP_ACCEPT_MIN_DISTANCE_M="${WARMUP_ACCEPT_MIN_DISTANCE_M:-2.0}"
 POST_WARMUP_SETTLE_SEC="${POST_WARMUP_SETTLE_SEC:-1}"
 POST_WARMUP_TURN_DEG="${POST_WARMUP_TURN_DEG:-0}"
+POST_WARMUP_TURN_MODE="${POST_WARMUP_TURN_MODE:-spin}"
 POST_WARMUP_TURN_CMD_VEL_Z="${POST_WARMUP_TURN_CMD_VEL_Z:-0.6}"
 POST_WARMUP_TURN_TIMEOUT_SEC="${POST_WARMUP_TURN_TIMEOUT_SEC:-25}"
 POST_WARMUP_TURN_STAGE_TIMEOUT_SEC="${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC:-60}"
@@ -83,6 +84,7 @@ cleanup_global() {
     wait "$LAUNCH_PID" >/dev/null 2>&1 || true
   fi
   echo "Diagnostics root: $diag_root"
+  echo "Summary report: $diag_root/summary.json"
 }
 trap cleanup_global EXIT
 
@@ -247,6 +249,12 @@ while d < -math.pi:
     d += 2.0 * math.pi
 print(d)
 PY
+}
+
+parse_nav_action_result_field() {
+  local path="$1"
+  local pattern="$2"
+  grep -m1 -E "$pattern" "$path" | awk -F': ' '{print $2}' || true
 }
 
 compute_phase_b_turn_deg() {
@@ -561,6 +569,12 @@ import sys
 print(abs(float(sys.argv[1])) * math.pi / 180.0)
 PY
 )"
+    target_turn_signed_rad="$(python3 - <<'PY' "$phase_turn_deg"
+import math
+import sys
+print(float(sys.argv[1]) * math.pi / 180.0)
+PY
+)"
     target_turn_tol_rad="$(python3 - <<'PY' "$POST_WARMUP_TURN_TOL_DEG"
 import math
 import sys
@@ -577,6 +591,13 @@ import sys
 print(abs(float(sys.argv[1])) * float(sys.argv[2]))
 PY
 )"
+
+    read_pose_component /clock "$phase_dir/clock_pre_turn.txt"
+    read_pose_component /odom "$phase_dir/odom_pre_turn.txt"
+    read_pose_component /odometry/filtered "$phase_dir/odom_filtered_pre_turn.txt"
+    read_pose_component /imu_with_covariance "$phase_dir/imu_with_covariance_pre_turn.txt"
+    capture_tf_pose map base_footprint "$phase_dir/tf_map_base_pre_turn.txt" || true
+    capture_tf_pose odom base_footprint "$phase_dir/tf_odom_base_pre_turn.txt" || true
 
     if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_pre_turn.txt"; then
       start_yaw="$(python3 - <<'PY' "$phase_dir/gz_pose_pre_turn.txt"
@@ -597,18 +618,35 @@ PY
     fi
 
     if [[ -n "${start_yaw:-}" ]]; then
-      echo "Trial $trial [$phase_label]: post-warmup rotate ${phase_turn_deg} deg before return start sample."
-      ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: ${turn_cmd_z}}}" >/dev/null 2>&1 &
-      TURN_PUB_PID=$!
+      echo "Trial $trial [$phase_label]: post-warmup rotate ${phase_turn_deg} deg via ${POST_WARMUP_TURN_MODE} before return start sample."
       turn_start_sec=$SECONDS
       turn_done=0
-      while :; do
-        if (( SECONDS - turn_stage_start_sec >= POST_WARMUP_TURN_STAGE_TIMEOUT_SEC )); then
-          echo "Trial $trial [$phase_label]: post-warmup turn stage watchdog timeout (${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC}s)." >&2
-          break
+
+      if [[ "$POST_WARMUP_TURN_MODE" == "spin" ]]; then
+        spin_goal_yaml="{target_yaw: ${target_turn_signed_rad}, time_allowance: {sec: ${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC}, nanosec: 0}}"
+        printf '%s\n' "$spin_goal_yaml" >"$phase_dir/spin_goal.yaml"
+        timeout "${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC}s" ros2 action send_goal /spin nav2_msgs/action/Spin "$spin_goal_yaml" --feedback >"$phase_dir/spin_action.txt" 2>&1
+        spin_cmd_rc=$?
+        spin_status="$(parse_nav_action_result_field "$phase_dir/spin_action.txt" "Goal finished with status:")"
+        spin_error_code="$(parse_nav_action_result_field "$phase_dir/spin_action.txt" "^[[:space:]]*error_code:")"
+        if [[ "$spin_cmd_rc" -eq 124 ]]; then
+          echo "Trial $trial [$phase_label]: spin action shell timeout after ${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC}s (see $phase_dir/spin_action.txt)." >&2
+          printf 'timeout\n' >"$phase_dir/spin_action_timeout.flag"
+        elif [[ "${spin_status:-}" == "SUCCEEDED" && "${spin_error_code:-}" == "0" ]]; then
+          turn_done=1
+        else
+          echo "Trial $trial [$phase_label]: spin action non-success (rc=${spin_cmd_rc}, status=${spin_status:-unknown}, error_code=${spin_error_code:-unknown}). See $phase_dir/spin_action.txt" >&2
         fi
-        if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_turn_current.txt"; then
-          current_yaw="$(python3 - <<'PY' "$phase_dir/gz_pose_turn_current.txt"
+      else
+        ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: ${turn_cmd_z}}}" >/dev/null 2>&1 &
+        TURN_PUB_PID=$!
+        while :; do
+          if (( SECONDS - turn_stage_start_sec >= POST_WARMUP_TURN_STAGE_TIMEOUT_SEC )); then
+            echo "Trial $trial [$phase_label]: post-warmup turn stage watchdog timeout (${POST_WARMUP_TURN_STAGE_TIMEOUT_SEC}s)." >&2
+            break
+          fi
+          if get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_turn_current.txt"; then
+            current_yaw="$(python3 - <<'PY' "$phase_dir/gz_pose_turn_current.txt"
 import math
 import sys
 from pathlib import Path
@@ -621,38 +659,47 @@ cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
 print(math.atan2(siny_cosp, cosy_cosp))
 PY
 )" || current_yaw=""
-          if [[ -n "${current_yaw:-}" ]]; then
-            turn_delta="$(normalize_angle_diff "$start_yaw" "$current_yaw")"
-            turn_abs="$(python3 - <<'PY' "$turn_delta"
+            if [[ -n "${current_yaw:-}" ]]; then
+              turn_delta="$(normalize_angle_diff "$start_yaw" "$current_yaw")"
+              turn_abs="$(python3 - <<'PY' "$turn_delta"
 import sys
 print(abs(float(sys.argv[1])))
 PY
 )"
-            turn_reached="$(python3 - <<'PY' "$turn_abs" "$target_turn_rad" "$target_turn_tol_rad"
+              turn_reached="$(python3 - <<'PY' "$turn_abs" "$target_turn_rad" "$target_turn_tol_rad"
 import sys
 turn_abs = float(sys.argv[1]); target = float(sys.argv[2]); tol = float(sys.argv[3])
 threshold = max(0.0, target - tol)
 print("1" if turn_abs >= threshold else "0")
 PY
 )"
-            if [[ "$turn_reached" == "1" ]]; then
-              turn_done=1
-              break
+              if [[ "$turn_reached" == "1" ]]; then
+                turn_done=1
+                break
+              fi
             fi
           fi
-        fi
 
-        if (( SECONDS - turn_start_sec >= POST_WARMUP_TURN_TIMEOUT_SEC )); then
-          echo "Trial $trial [$phase_label]: post-warmup turn timed out before reaching target yaw." >&2
-          break
-        fi
-        sleep 0.2
-      done
+          if (( SECONDS - turn_start_sec >= POST_WARMUP_TURN_TIMEOUT_SEC )); then
+            echo "Trial $trial [$phase_label]: post-warmup turn timed out before reaching target yaw." >&2
+            break
+          fi
+          sleep 0.2
+        done
 
-      kill -INT "$TURN_PUB_PID" >/dev/null 2>&1 || true
-      timeout 2s bash -lc 'wait "$1" >/dev/null 2>&1 || true' _ "$TURN_PUB_PID" || true
-      timeout 3s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+        kill -INT "$TURN_PUB_PID" >/dev/null 2>&1 || true
+        timeout 2s bash -lc 'wait "$1" >/dev/null 2>&1 || true' _ "$TURN_PUB_PID" || true
+        timeout 3s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1 || true
+      fi
+
       sleep "$POST_WARMUP_TURN_SETTLE_SEC"
+      read_pose_component /clock "$phase_dir/clock_post_turn.txt"
+      read_pose_component /odom "$phase_dir/odom_post_turn.txt"
+      read_pose_component /odometry/filtered "$phase_dir/odom_filtered_post_turn.txt"
+      read_pose_component /imu_with_covariance "$phase_dir/imu_with_covariance_post_turn.txt"
+      capture_tf_pose map base_footprint "$phase_dir/tf_map_base_post_turn.txt" || true
+      capture_tf_pose odom base_footprint "$phase_dir/tf_odom_base_post_turn.txt" || true
+      get_maya_pose_retry "$world_topic" >"$phase_dir/gz_pose_post_turn.txt" || true
       if [[ "$turn_done" -eq 1 ]]; then
         echo "Trial $trial [$phase_label]: post-warmup turn complete."
       fi
@@ -740,8 +787,9 @@ PY
   timeout 6s ros2 topic info /cmd_vel --verbose >"$phase_dir/cmd_vel_info.txt" 2>&1 || true
   timeout 6s ros2 topic info /collision_monitor_state --verbose >"$phase_dir/collision_monitor_state_info.txt" 2>&1 || true
   printf '%s\n' "$phase_turn_deg" >"$phase_dir/post_warmup_turn_deg_used.txt"
+  printf '%s\n' "$POST_WARMUP_TURN_MODE" >"$phase_dir/post_warmup_turn_mode_used.txt"
 
-  echo "Trial $trial [$phase_label]: phase complete."
+  echo "Trial $trial [$phase_label]: phase complete. Diagnostics: $phase_dir"
   return 0
 }
 
@@ -902,6 +950,23 @@ def parse_nav_goal_result(path: Path):
     }
 
 
+def parse_spin_action_result(path: Path, timeout_flag: Path):
+    txt = read_text(path)
+    status_m = re.search(r"Goal finished with status:\s*([A-Z_]+)", txt)
+    error_m = re.search(r"error_code:\s*([0-9]+)", txt)
+    feedback = [float(v) for v in re.findall(r"angular_distance_traveled:\s*([\-0-9.eE]+)", txt)]
+    result = {
+        "status": status_m.group(1) if status_m else "UNKNOWN",
+        "error_code": int(error_m.group(1)) if error_m else None,
+        "raw_available": bool(txt.strip()),
+        "feedback_count": len(feedback),
+        "feedback_last_angular_distance_traveled_rad": feedback[-1] if feedback else None,
+    }
+    if result["status"] == "UNKNOWN" and timeout_flag.exists():
+        result["status"] = "TIMEOUT"
+    return result
+
+
 def parse_map_metadata(path: Path):
     txt = read_text(path)
     if not txt:
@@ -960,6 +1025,7 @@ def parse_phase_dir(phase_dir: Path, phase_name: str):
     filt_end = parse_odom_xy(phase_dir / "odom_filtered_end.txt")
     goal = parse_goal_json(phase_dir / "goal.json")
     nav = parse_nav_goal_result(phase_dir / "nav_goal.txt")
+    spin = parse_spin_action_result(phase_dir / "spin_action.txt", phase_dir / "spin_action_timeout.flag")
     if nav["status"] == "UNKNOWN" and (phase_dir / "nav_goal_timeout.flag").exists():
         nav["status"] = "TIMEOUT"
     collision = parse_collision_states(phase_dir / "collision_monitor_state.txt")
@@ -975,11 +1041,14 @@ def parse_phase_dir(phase_dir: Path, phase_name: str):
     filt_end_stamp = parse_header_stamp(phase_dir / "odometry_filtered_end.txt") or parse_header_stamp(phase_dir / "odom_filtered_end.txt")
     turn_deg_txt = read_text(phase_dir / "post_warmup_turn_deg_used.txt").strip()
     turn_deg_used = float(turn_deg_txt) if turn_deg_txt else None
+    turn_mode_used = read_text(phase_dir / "post_warmup_turn_mode_used.txt").strip() or None
 
     phase = {
         "phase": phase_name,
         "nav_result": nav,
+        "spin_result": spin,
         "post_warmup_turn_deg_used": turn_deg_used,
+        "post_warmup_turn_mode_used": turn_mode_used,
         "clock": {
             "start": clock_start,
             "end": clock_end,
@@ -1147,9 +1216,10 @@ for t in report["trials"]:
     for pname, p in sorted(t.get("phases", {}).items()):
         status = p["nav_result"]["status"]
         err = p["nav_result"]["error_code"]
+        spin_status = (p.get("spin_result") or {}).get("status")
         dur = p["clock"]["duration_sec"]
         goal_err = p["metrics"].get("goal_error_from_end_map_m")
-        pieces.append(f"{pname}:status={status},err={err},dur={dur},goal_err={goal_err},turn_deg={p.get('post_warmup_turn_deg_used')}")
+        pieces.append(f"{pname}:status={status},err={err},dur={dur},goal_err={goal_err},turn_deg={p.get('post_warmup_turn_deg_used')},turn_mode={p.get('post_warmup_turn_mode_used')},spin_status={spin_status}")
     cmp = t.get("phase_comparison", {})
     cmp_txt = ""
     if cmp:
@@ -1159,4 +1229,5 @@ for t in report["trials"]:
     print(f"- {t['trial']}: " + " ; ".join(pieces) + cmp_txt)
 
 print(f"\nDetailed report: {summary_path}")
+print(f"Diagnostics root: {diag_root}")
 PY
