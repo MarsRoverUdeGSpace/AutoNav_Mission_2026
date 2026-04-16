@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    video:
+      publish_left_right: true
+      publish_rgb: false
+    pos_tracking:
+      publish_tf: false
+      publish_map_tf: false
+      publish_odom_pose: false
