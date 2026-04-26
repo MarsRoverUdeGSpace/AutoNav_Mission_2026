@@ -1,6 +1,7 @@
 ########################
 # OS / Editor cruft
 ########################
+.codex
 # macOS
 .DS_Store
 .AppleDouble
@@ -126,6 +127,3 @@ temp/
 *.bak
 *.old
 *.orig
-
-
-.codex

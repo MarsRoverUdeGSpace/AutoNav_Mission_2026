@@ -11,23 +11,31 @@ ekf_filter_node:
     world_frame: odom
 
     odom0: /odom
+    # Use wheel odom for planar position and heading pose, but do not also fuse
+    # wheel-derived yaw rate. That rotational velocity is correlated with the
+    # same encoder source and competes with the IMU yaw-rate measurement during
+    # turns.
     odom0_config: [true,  true,  false,
                    false, false, true,
                    true,  false, false,
-                   false, false, true,
+                   false, false, false,
                    false, false, false]
     odom0_differential: false
     odom0_relative: false
 
     imu0: /imu
+    # Hardware IMU orientation is not yet trustworthy enough to fuse directly.
+    # Use yaw rate only until the upstream IMU publisher and frame behavior are
+    # validated more rigorously on Jetson.
     imu0_config: [false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false,
                   false, false, true,
                   false, false, false]
     imu0_remove_gravitational_acceleration: true
     imu0_differential: false
-    imu0_relative: true
+    # Relative orientation is not used when only yaw rate is fused.
+    imu0_relative: false
 
     # Tighter covariances to reduce drift while trusting IMU yaw.
     process_noise_covariance: [

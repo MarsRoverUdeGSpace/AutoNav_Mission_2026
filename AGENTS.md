@@ -539,3 +539,435 @@ This section mirrors the current known-good SIM findings from the `develop` bran
 - Operational isolation rule:
   - When validating ArUco behavior/regression, launch with `use_yolo:=false` to remove perception-resource contention and topic overlap confounds.
   - Re-enable YOLO only after ArUco topic/output is confirmed healthy.
+
+### 8.11 Humble-Jetson Minimal Encoder Odom Validation Milestone (2026-04-16)
+
+- A new minimal hardware validation path was established on branch `humble-jetson-minimal-odom` to bring up only:
+  - `robot_state_publisher`
+  - wheel encoder odom (`encoder_odom.py`)
+  - `robot_localization` EKF
+- Purpose:
+  - validate the hardware odom + IMU + TF chain before re-enabling Nav2, LiDAR, ZED, or other autonomy subsystems.
+- Hardware topic contract used in this milestone:
+  - IMU: `/sensors/bno055/imu/data`
+  - left encoder ticks: `/sensors/roboclaw/encoders/left_m1/ticks`
+  - right encoder ticks: `/sensors/roboclaw/encoders/right_m1/ticks`
+  - optional diagnostic rates:
+    - `/sensors/roboclaw/encoders/left_m1/qpps`
+    - `/sensors/roboclaw/encoders/right_m1/qpps`
+- Current wheel geometry assumptions for this path:
+  - wheel separation: `1.0 m`
+  - wheel radius: `0.1636 m`
+  - encoder ticks per revolution: `7400` (validated hardware setting; do not revert to the older `2048` assumption).
+
+Validated launch command (Jetson, Humble, minimal odom test):
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false rviz:=false \
+  use_nav2:=false \
+  use_zed:=false \
+  use_ld19:=false \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false \
+  use_ekf:=true \
+  use_encoder_odom:=true \
+  odom_topic:=/odom \
+  imu_topic:=/sensors/bno055/imu/data \
+  left_encoder_ticks_topic:=/sensors/roboclaw/encoders/left_m1/ticks \
+  right_encoder_ticks_topic:=/sensors/roboclaw/encoders/right_m1/ticks \
+  encoder_msg_type:=std_msgs/msg/Int32 \
+  encoder_ticks_per_rev:=7400 \
+  encoder_wheel_radius:=0.1636 \
+  encoder_wheel_separation:=1.0 \
+  encoder_publish_tf:=false
+```
+
+Code/launch lessons captured in this milestone:
+- `maya.launch.xml` on Humble cannot use the XML frontend expression:
+  - `$(eval 'not ' + var('sim'))`
+- For Humble XML compatibility, `use_encoder_odom` must remain a plain boolean arg and be passed explicitly in HW launches.
+- Raw PCB encoder publishers were discovered to use incompatible reliability with the initial subscriber setup.
+- `encoder_odom.py` had to be updated to subscribe with `BEST_EFFORT` QoS so it could receive hardware tick topics reliably.
+- With those fixes applied, the minimal stack successfully produced:
+  - `/odom`
+  - `/odometry/filtered`
+  - TF `odom -> base_footprint`
+
+Observed validation result:
+- The plumbing path is now confirmed healthy:
+  - encoders -> `encoder_odom.py` -> `/odom` -> EKF -> `/odometry/filtered` + TF
+- Manual hardware movement produced live odom and TF updates, confirming the minimal chain is functional.
+- Example validated behavior:
+  - forward motion near `0.51 m`
+  - small initial yaw drift around `-0.95 deg`
+  - EKF and TF visibly tracked motion in real time
+
+Status update after 2026-04-26 hardware validation:
+- Estimation quality is now good enough for controlled motion testing with Nav2 still disabled.
+- Wheel encoder odom + BNO055 IMU fusion produced an almost perfect square pattern while correcting yaw orientation online.
+- The validated square-test path used movement commands only: launch the minimal EKF/encoder/IMU stack, then run `square_test.py`.
+- The prior jumpy-odom concern should remain in mind, but the current validated result means the next work is Nav2 re-enable / stack integration, not basic odom plumbing.
+
+Priority after this milestone:
+1. Preserve the validated encoder + BNO055 + EKF baseline as the hardware truth.
+2. Reintroduce LD19 + SLAM + Nav2 conservatively on top of that baseline.
+3. Keep VSLAM optional during first Nav2 re-enable; do not let it publish competing TF or replace wheel odom.
+4. Use simulation next to match the validated hardware-software integration contracts, not to invent a separate autonomy path.
+
+Recommended debug commands for this stage:
+
+```bash
+ros2 topic echo /sensors/roboclaw/encoders/left_m1/ticks
+ros2 topic echo /sensors/roboclaw/encoders/right_m1/ticks
+ros2 topic echo /odom
+ros2 topic echo /odometry/filtered
+ros2 topic echo /sensors/bno055/imu/data
+ros2 run tf2_ros tf2_echo odom base_footprint
+```
+
+### 8.12 Humble-Jetson Lightweight VSLAM Validation Milestone (2026-04-16)
+
+- A lightweight ZED VSLAM bringup path was integrated into `maya.launch.xml` on branch `humble-jetson-minimal-odom`.
+- Purpose:
+  - validate a Jetson-local stereo VSLAM pipeline that is compatible with low-bandwidth remote RViz use over Wi-Fi.
+  - keep the VSLAM subsystem separate from Nav2 and EKF during first validation.
+- Design rule established in this milestone:
+  - primary IMU for this hardware stack remains `/sensors/bno055/imu/data`
+  - ZED IMU must not silently become the default IMU for the rover autonomy baseline
+
+Validated isolated VSLAM launch intent (Jetson, Humble):
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false \
+  rviz:=false \
+  use_nav2:=false \
+  use_ekf:=false \
+  use_encoder_odom:=false \
+  use_ld19:=false \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false \
+  use_zed:=true \
+  use_vslam:=true \
+  zed_camera_model:=zed2i \
+  zed_camera_name:=zed2i \
+  zed_node_name:=zed_node \
+  zed_enable_ipc:=false \
+  zed_publish_tf:=false \
+  zed_publish_map_tf:=false \
+  use_zed_static_tf:=false \
+  vslam_imu_topic:=/sensors/bno055/imu/data \
+  vslam_enable_landmarks_view:=true \
+  vslam_enable_observations_view:=false \
+  vslam_enable_slam_visualization:=true
+```
+
+Implementation/bringup lessons captured:
+- `maya.launch.xml` now supports an explicit `use_vslam` path instead of requiring a manual 3-terminal workflow.
+- `zed_bgra_to_rgb.py` was parameterized so it no longer depends on one hard-coded ZED namespace.
+- `zed_vslam.launch.py` had to be reworked to avoid Humble launch frontend/type issues:
+  - component parameter arrays must be passed as real resolved Python values
+  - simple literal defaults are more reliable than clever launch substitution composition in this path
+- Isaac ROS VSLAM rejects odd image dimensions:
+  - previous ZED custom publish size produced `427x240`
+  - VSLAM failed with `Odd Image width or height`
+  - `pub_downscale_factor` was changed to `5.0`, producing an even image size (`384x216`) suitable for VSLAM
+
+ZED VSLAM profile rules established:
+- use a dedicated override file:
+  - `src/maya_bringup/config/zed2i_vslam_override.yaml`
+- keep the ZED ROS graph minimal:
+  - stereo images enabled
+  - camera info enabled as needed by wrapper
+  - IMU enabled
+  - depth disabled
+  - point cloud disabled
+  - object detection disabled
+  - body tracking disabled
+  - mapping disabled
+  - status disabled
+- current lightweight defaults:
+  - `pub_frame_rate: 8.0`
+  - `pub_resolution: CUSTOM`
+  - `pub_downscale_factor: 5.0`
+
+Observed validation result:
+- The integrated VSLAM component now loads and initializes successfully.
+- Relevant VSLAM topics observed:
+  - `/visual_slam/tracking/odometry`
+  - `/visual_slam/tracking/slam_path`
+  - `/visual_slam/tracking/vo_path`
+  - `/visual_slam/tracking/vo_pose`
+  - `/visual_slam/tracking/vo_pose_covariance`
+  - `/visual_slam/vis/landmarks_cloud`
+  - `/visual_slam/vis/observations_cloud`
+  - `/visual_slam/vis/slam_odometry`
+  - additional pose-graph/localizer visualization topics
+- Current remote-operator interest was narrowed to:
+  - `/visual_slam/vis/landmarks_cloud`
+  - `/visual_slam/vis/observations_cloud`
+  - `/visual_slam/tracking/odometry`
+  - `/visual_slam/tracking/slam_path`
+
+Bandwidth result from image-side measurements:
+- left/right ZED raw rect images and the local rgb8 republished images together are roughly within about `0.9 MB/s` to `1.2 MB/s` steady-state in the tested configuration.
+- This is within the practical Wi-Fi target budget, but the remaining bandwidth risk is likely dominated by VSLAM visualization topics rather than the downscaled stereo images themselves.
+
+Important functional note:
+- `vslam_enable_slam_visualization:=false` did not remove all of the extra VSLAM visualization outputs as hoped.
+- Operationally, topic-level selection on the PC side and/or future deeper launch/runtime pruning is still required.
+
+Interpretation of this milestone:
+- isolated lightweight VSLAM is now structurally validated
+- minimal encoder odom + EKF is structurally validated
+- the next problem is integration quality, not basic bringup
+
+Next logical steps toward autonomy integration (execution order):
+1. Measure the actual bandwidth/rate cost of the VSLAM topics that matter most:
+   - `/visual_slam/vis/landmarks_cloud`
+   - `/visual_slam/vis/observations_cloud`
+   - `/visual_slam/tracking/odometry`
+   - `/visual_slam/tracking/slam_path`
+2. Define the minimal remote VSLAM topic contract for Wi-Fi mode:
+   - keep only operator-useful topics subscribed from the PC
+   - treat landmarks + tracking odometry/path as preferred candidates
+3. Inspect the VSLAM topic/frame contract before fusion:
+   - `header.frame_id`
+   - `child_frame_id`
+   - covariance sanity
+   - update rate
+   - failure behavior when visual features are weak/lost
+4. Integrate VSLAM conservatively with the minimal odom milestone:
+   - wheel encoder odom remains the baseline local motion source
+   - BNO055 remains the primary IMU
+   - VSLAM becomes a secondary visual odometry / drift-reduction source
+5. Tune `src/maya_bringup/config/ekf.yaml` for the fused HW stack:
+   - wheel odom + BNO055 first
+   - then add VSLAM only after its outputs are trusted
+6. Re-enable Nav2 only after the fused estimate is stable enough that:
+   - `odom -> base_footprint` is smooth
+   - pose jumps are eliminated or rare enough to be operationally acceptable
+   - bandwidth remains within Wi-Fi operating limits with headroom
+
+Integration principle locked by this milestone:
+- VSLAM should augment the minimal encoder-odom baseline, not replace it.
+- The rover must retain a usable local odom solution if visual tracking degrades.
+
+EKF inference locked after review of `src/maya_bringup/config/ekf.yaml`:
+- The current EKF should continue to serve as the **local odom filter**:
+  - `world_frame: odom`
+  - EKF owns `odom -> base_footprint`
+- The safe baseline remains:
+  - `odom0 = /odom` from wheel encoder odom
+  - `imu0 = /sensors/bno055/imu/data`
+- Do not let VSLAM publish competing local TF ownership into the same chain used by Nav2.
+- Do not replace the wheel-odom baseline with VSLAM.
+- Do not fuse multiple rotational sources aggressively at first.
+
+Conservative fusion path inferred from the current validated subsystems:
+1. Stabilize encoder odom + BNO055 + EKF first.
+2. Inspect one real message from:
+   - `/visual_slam/tracking/odometry`
+3. Verify before fusion:
+   - `header.frame_id`
+   - `child_frame_id`
+   - covariance sanity
+   - update rate
+   - behavior during feature loss
+4. If the topic contract is sane, add VSLAM as a **secondary odometry source** in EKF:
+   - preferred first candidate: `odom1 = /visual_slam/tracking/odometry`
+5. First fusion should be conservative:
+   - prefer planar pose correction from VSLAM (`x`, `y`, `yaw`)
+   - keep wheel odom as the main short-term motion prior
+   - keep BNO055 as the primary yaw / yaw-rate source
+   - do not fuse extra VSLAM twists until they are shown to be stable and useful
+6. Re-enable Nav2 only after the fused local odom estimate is smooth under:
+   - slow straight drive
+   - slow in-place turn
+
+Operational rule from this inference:
+- VSLAM is a drift-reduction / visual odom aid layered on top of the minimal odom milestone.
+- If vision degrades, the rover must still have a usable EKF odom chain from encoders + BNO055.
+
+### 8.13 Hardware Motion + Wi-Fi VSLAM Validation Milestone (2026-04-26)
+
+Validated minimal motion stack:
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false \
+  rviz:=false \
+  use_nav2:=false \
+  use_zed:=false \
+  use_vslam:=false \
+  use_ld19:=false \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false \
+  use_ekf:=true \
+  use_encoder_odom:=true \
+  use_imu_sanitizer:=true \
+  encoder_ticks_per_rev:=7400 \
+  encoder_wheel_separation:=1.0 \
+  encoder_publish_tf:=false
+```
+
+Validated square-test command:
+
+```bash
+ros2 run maya_bringup square_test.py --ros-args \
+  -p side_length:=5.0 \
+  -p turn_angle_deg:=90.0 \
+  -p linear_speed:=0.15 \
+  -p angular_speed:=0.25 \
+  -p heading_gain:=1.25 \
+  -p max_heading_correction:=0.1 \
+  -p pause_sec:=1.0
+```
+
+Observed result:
+- Wheel encoder odom + BNO055 IMU fusion achieved an almost perfect square pattern.
+- Yaw orientation was corrected online during the drive segments.
+- The test did not require Nav2, LiDAR, ZED, VSLAM, ArUco, YOLO, or depth scan layers.
+- `square_test.py` now supports both right and left turns through the sign of `turn_angle_deg`.
+- `imu_sanitize_relay.py` must be executable because it is launched as a runtime script.
+
+Validated VSLAM-over-Wi-Fi path:
+
+```bash
+ros2 launch zed_wrapper zed_camera.launch.py \
+  camera_model:=zed2i \
+  camera_name:=zed2i \
+  node_name:=zed_node \
+  publish_tf:=false \
+  publish_map_tf:=false \
+  enable_ipc:=false \
+  ros_params_override_path:=/home/ro/AutoNav_Mission_2026/src/maya_bringup/config/zed2i_vslam_override.yaml
+
+ros2 run maya_bringup zed_bgra_to_rgb.py
+ros2 launch maya_bringup zed_vslam.launch.py
+```
+
+Observed result:
+- VSLAM can run over the limited Wi-Fi link in the tested lightweight ZED configuration.
+- This upgrades VSLAM from "structurally integrated" to "bandwidth-viable as an optional local/remote aid".
+- It still must not replace the wheel encoder + IMU odom baseline or publish competing TF in the Nav2 chain.
+
+Mission-status interpretation:
+- The hardware baseline has crossed from bringup/plumbing into controlled autonomy integration.
+- Next engineering target is Nav2 re-enable on top of the validated encoder + IMU + EKF motion baseline.
+- Simulation work should now be made compatible with this validated hardware-software contract.
+
+### 8.14 Wireless-First Integration Rule and Fresh Validation Order (2026-04-16 / refreshed 2026-04-26)
+
+- After bringing up the combined stack (`encoders + BNO055 + LD19 + EKF + SLAM + Nav2 + ZED VSLAM`), the next architecture decision was clarified:
+  - the main problem is no longer "can all subsystems launch together?"
+  - the main problem is "what must stay local on Jetson and what is actually worth transmitting over the wireless link?"
+- The correct operating model for the field stack is now:
+  - compute locally on Jetson
+  - fuse locally on Jetson
+  - transmit only operator-critical outputs
+  - avoid streaming raw intermediate perception topics unless explicitly needed for debugging
+
+Wireless-first integration rule:
+- Anything that can be computed locally without being published for remote consumption should remain local.
+- The wireless link should be treated as an operator/control channel, not as a full raw-sensor replication channel.
+- The goal is to preserve headroom and reliability on the link, not merely to fit under an optimistic throughput limit.
+
+Topics/classes of data that should remain local on Jetson by default:
+- raw encoder tick topics
+- raw IMU streams
+- raw `/scan` as a permanent remote feed
+- raw stereo image topics
+- most VSLAM internal/debug visualization topics
+- dense intermediate clouds unless a specific debugging need justifies them
+- high-rate estimator internals that do not directly improve operator decisions
+
+Topics/classes of data that are appropriate to expose remotely for normal operation:
+- compressed operator image stream
+- `/map`
+- `/tf`
+- `/tf_static`
+- `/odometry/filtered`
+- goal / waypoint / spin interfaces
+- Nav2 status / feedback
+- optionally a small number of reduced, operator-useful visualization topics if they are proven worth the bandwidth
+
+Odometry-source interpretation refined during this stage:
+- The rover now has multiple odometry/localization ingredients available or partially available:
+  - wheel encoder odom
+  - IMU
+  - lidar-driven localization / SLAM contribution
+  - visual odometry / visual SLAM contribution
+- These must not be treated as equal just because they exist.
+- Before any source is trusted as part of the field autonomy baseline, it must be evaluated for:
+  - frame contract
+  - covariance sanity
+  - update rate
+  - stationary drift
+  - behavior during degradation or loss
+
+Current practical architecture direction:
+- local motion prior / fallback:
+  - wheel encoders
+  - BNO055 IMU
+- local/global correction sources:
+  - lidar-based SLAM/localization
+  - VSLAM only if it provides net value
+- local fused pose for autonomy:
+  - `/odometry/filtered`
+  - EKF-owned `odom -> base_footprint`
+- localization layer:
+  - `map -> odom`
+
+Important integration principle locked here:
+- Do not keep all available odometry sources in the field stack by default just because they can be launched together.
+- The first field-capable wireless autonomy stack should prefer the smallest onboard stack that works reliably.
+- VSLAM is now considered optional until it proves that it materially improves autonomy quality without destabilizing TF, overloading Jetson, or consuming too much wireless/debug budget.
+
+Recommended minimum field-capable autonomy baseline for wireless operation:
+- wheel encoder odom
+- BNO055 IMU
+- EKF
+- LD19
+- `slam_toolbox`
+- Nav2
+- one compressed ZED operator-view stream
+
+Recommended interpretation of VSLAM at this stage:
+- keep VSLAM as an optional local aid
+- do not assume it belongs in the first wireless field baseline
+- only retain it in the baseline if side-by-side tests show a clear net gain
+
+Fresh validation order for the next session:
+1. Re-test the minimum local autonomy stack **without VSLAM**:
+   - encoders + BNO055 + EKF + LD19 + SLAM + Nav2
+2. Validate that this minimum stack is autonomously usable before adding more odometry sources.
+3. Measure the remote wireless budget for only:
+   - compressed image
+   - `/map`
+   - `/tf`
+   - `/tf_static`
+   - `/odometry/filtered`
+   - goals / feedback
+4. Confirm that remote RViz and operator control remain reliable with that minimal export contract.
+5. Only then repeat the same test with VSLAM enabled locally.
+6. Compare:
+   - autonomy quality
+   - TF stability
+   - Jetson load
+   - bandwidth/debug cost
+7. Keep VSLAM in the baseline only if it is clearly a net win.
+
+Next logical step for a fresh session:
+- start from the minimum wireless-ready autonomy stack **without VSLAM**
+- verify it can:
+  - launch cleanly
+  - maintain `odom -> base_footprint`
+  - maintain `map -> odom`
+  - accept short Nav2 goals
+  - remain usable over the intended wireless link
+- after that baseline is accepted, run the exact same autonomy test again with VSLAM enabled and judge whether it should remain part of the field stack.

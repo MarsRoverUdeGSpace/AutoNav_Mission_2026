@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sensor_msgs.msg import Image
@@ -13,32 +14,45 @@ class ZedBgraToRgb(Node):
         super().__init__('zed_bgra_to_rgb')
 
         self._bridge = CvBridge()
+        self.declare_parameter('left_input_topic', '/zed2i/zed_node/left/color/rect/image')
+        self.declare_parameter('right_input_topic', '/zed2i/zed_node/right/color/rect/image')
+        self.declare_parameter('left_output_topic', '/zed2i/zed_node/left/color/rect/image_rgb8')
+        self.declare_parameter('right_output_topic', '/zed2i/zed_node/right/color/rect/image_rgb8')
+
+        left_input_topic = self.get_parameter('left_input_topic').value
+        right_input_topic = self.get_parameter('right_input_topic').value
+        left_output_topic = self.get_parameter('left_output_topic').value
+        right_output_topic = self.get_parameter('right_output_topic').value
 
         self._sub_left = self.create_subscription(
             Image,
-            '/zed2i/zed_node/left/color/rect/image',
+            left_input_topic,
             self._left_cb,
             10
         )
         self._sub_right = self.create_subscription(
             Image,
-            '/zed2i/zed_node/right/color/rect/image',
+            right_input_topic,
             self._right_cb,
             10
         )
 
         self._pub_left = self.create_publisher(
             Image,
-            '/zed2i/zed_node/left/color/rect/image_rgb8',
+            left_output_topic,
             10
         )
         self._pub_right = self.create_publisher(
             Image,
-            '/zed2i/zed_node/right/color/rect/image_rgb8',
+            right_output_topic,
             10
         )
 
-        self.get_logger().info('Republishing ZED stereo images as rgb8')
+        self.get_logger().info(
+            'Republishing ZED stereo images as rgb8 '
+            f'left={left_input_topic} -> {left_output_topic}, '
+            f'right={right_input_topic} -> {right_output_topic}'
+        )
 
     def _convert(self, msg: Image):
         if msg.encoding == 'bgra8':
@@ -77,9 +91,14 @@ def main(args=None) -> None:
     node = ZedBgraToRgb()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except ExternalShutdownException:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
