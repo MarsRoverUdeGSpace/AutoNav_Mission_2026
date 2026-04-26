@@ -127,3 +127,5 @@ temp/
 *.old
 *.orig
 
+
+.codex
