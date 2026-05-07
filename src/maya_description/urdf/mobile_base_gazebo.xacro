@@ -5,13 +5,15 @@
 
   <gazebo>
     <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
-      <!-- Match Gazebo wheel groups to the actual rover left/right sides.
-           Swapping these corrupts turn kinematics and poisons /odom yaw. -->
-      <left_joint>front_left_joint</left_joint>
-      <left_joint>back_left_joint</left_joint>
+      <!-- DiffDrive left/right are relative to the navigation frame.
+           base_link is rotated +90 deg under base_footprint, so CAD *_right
+           joints are nav-left and CAD *_left joints are nav-right. Keep this
+           mapping aligned with observed /cmd_vel yaw sign. -->
+      <left_joint>front_right_joint</left_joint>
+      <left_joint>back_right_joint</left_joint>
 
-      <right_joint>front_right_joint</right_joint>
-      <right_joint>back_right_joint</right_joint>
+      <right_joint>front_left_joint</right_joint>
+      <right_joint>back_left_joint</right_joint>
 
       <!-- Frames consistent with ROS navigation stack -->
       <frame_id>odom</frame_id>
@@ -30,34 +32,35 @@
     </plugin>
   </gazebo>
 
-  <!-- Give the drive wheels explicit contact parameters for skid-steer turning.
-       Heightmap terrain is much less forgiving than the empty world defaults. -->
+  <!-- High-traction compacted sandy desert contact. This is still a rigid-plane
+       approximation, not deformable sand/sinkage, but it reduces the excessive
+       sliding seen during square-test tuning. -->
   <gazebo reference="front_left">
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <slip1>0.02</slip1>
-    <slip2>0.02</slip2>
+    <mu1>20.0</mu1>
+    <mu2>20.0</mu2>
+    <slip1>0.00001</slip1>
+    <slip2>0.00001</slip2>
   </gazebo>
 
   <gazebo reference="back_left">
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <slip1>0.02</slip1>
-    <slip2>0.02</slip2>
+    <mu1>20.0</mu1>
+    <mu2>20.0</mu2>
+    <slip1>0.00001</slip1>
+    <slip2>0.00001</slip2>
   </gazebo>
 
   <gazebo reference="front_right">
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <slip1>0.02</slip1>
-    <slip2>0.02</slip2>
+    <mu1>20.0</mu1>
+    <mu2>20.0</mu2>
+    <slip1>0.00001</slip1>
+    <slip2>0.00001</slip2>
   </gazebo>
 
   <gazebo reference="back_right">
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <slip1>0.02</slip1>
-    <slip2>0.02</slip2>
+    <mu1>20.0</mu1>
+    <mu2>20.0</mu2>
+    <slip1>0.00001</slip1>
+    <slip2>0.00001</slip2>
   </gazebo>
 
 

@@ -13,6 +13,8 @@
     <arg name="spawn_z" default="0.25" />
     <arg name="spawn_yaw" default="0.0" />
     <arg name="rviz" default="true" />
+    <!-- Allow motion/estimation-only tests, e.g. square_test.py, without starting SLAM/Nav2. -->
+    <arg name="use_nav2" default="true" />
     <!-- Optional depth->scan helper pipeline; disable to isolate lidar-only baseline behavior. -->
     <arg name="use_depth_scan_pipeline" default="false" />
     <!-- Optional RTAB-Map RGB-D odometry publisher for /visual_odom (used by EKF odom1). -->
@@ -86,7 +88,7 @@
         <param name="imu0" value="/imu_with_covariance" />
         <param name="use_sim_time" value="true" />
     </node>
-    <include file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
+    <include if="$(var use_nav2)" file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
         <arg name="use_sim_time" value="True" />
         <arg name="slam" value="True" />
         <arg name="autostart" value="True" />

@@ -85,15 +85,18 @@
     </joint>
   </xacro:macro>
 
+  <!-- Wheel joint Z values are leveled for Gazebo contact. The CAD-exported
+       wheel origins differed by a few millimeters, enough to make one wheel
+       float or overload another during skid-steer turns. -->
   <!-- Left wheels use default spin axis from wheel_axis_left -->
-  <xacro:maya_wheel prefix="front_left" mesh="file://$(find maya_description)/meshes/front_left.STL" xyz="-0.32478 -0.62736 -0.27744" rpy="1.5702 0 1.5708" inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057753" inertial_rpy="0 0 0"/>
+  <xacro:maya_wheel prefix="front_left" mesh="file://$(find maya_description)/meshes/front_left.STL" xyz="-0.32478 -0.62736 -0.2764" rpy="1.5702 0 1.5708" inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057753" inertial_rpy="0 0 0"/>
 
-  <xacro:maya_wheel prefix="back_left" mesh="file://$(find maya_description)/meshes/back_left.STL" xyz="-0.32513 0.28848 -0.27699" rpy="1.5708 0 1.5708" inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057572" inertial_rpy="0 0 0"/>
+  <xacro:maya_wheel prefix="back_left" mesh="file://$(find maya_description)/meshes/back_left.STL" xyz="-0.32513 0.28848 -0.2764" rpy="1.5708 0 1.5708" inertial_xyz="-4.8481E-06 -8.0801E-06 -0.057572" inertial_rpy="0 0 0"/>
 
   <!-- Right wheels override spin axis to wheel_axis_right -->
-  <xacro:maya_wheel prefix="front_right" mesh="file://$(find maya_description)/meshes/front_right.STL" xyz="0.3112596 -0.61714 -0.27409" rpy="1.5657 0.51887 -1.5734" axis="${wheel_axis_right}" inertial_xyz="-4.8512E-06 -8.0627E-06 -0.046342" inertial_rpy="0 0 0"/>
+  <xacro:maya_wheel prefix="front_right" mesh="file://$(find maya_description)/meshes/front_right.STL" xyz="0.3112596 -0.61714 -0.2764" rpy="1.5657 0.51887 -1.5734" axis="${wheel_axis_right}" inertial_xyz="-4.8512E-06 -8.0627E-06 -0.046342" inertial_rpy="0 0 0"/>
 
-  <xacro:maya_wheel prefix="back_right" mesh="file://$(find maya_description)/meshes/back_right.STL" xyz="0.3112382 0.27364 -0.28031" rpy="-1.5781 -0.91737 1.5766" axis="${wheel_axis_right}" inertial_xyz="-4.8659E-06 -8.069E-06 -0.034709" inertial_rpy="0 0 0"/>
+  <xacro:maya_wheel prefix="back_right" mesh="file://$(find maya_description)/meshes/back_right.STL" xyz="0.3112382 0.27364 -0.2764" rpy="-1.5781 -0.91737 1.5766" axis="${wheel_axis_right}" inertial_xyz="-4.8659E-06 -8.069E-06 -0.034709" inertial_rpy="0 0 0"/>
 
 
 

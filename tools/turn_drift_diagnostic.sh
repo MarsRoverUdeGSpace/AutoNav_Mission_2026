@@ -610,6 +610,32 @@ def final_valid(vals):
             return v
     return None
 
+def xy_drift_stats(samples, getter):
+    pts = []
+    for s in samples:
+        obj = getter(s)
+        if obj is None:
+            continue
+        x = obj.get("x")
+        y = obj.get("y")
+        if x is None or y is None:
+            continue
+        pts.append((float(x), float(y)))
+    if len(pts) < 2:
+        return None
+    x0, y0 = pts[0]
+    rel = [(x - x0, y - y0) for x, y in pts]
+    radii = [math.hypot(x, y) for x, y in rel]
+    xf, yf = rel[-1]
+    return {
+        "count": len(pts),
+        "final_dx_m": xf,
+        "final_dy_m": yf,
+        "final_drift_m": math.hypot(xf, yf),
+        "max_drift_from_start_m": max(radii),
+        "mean_drift_from_start_m": stats.mean(radii),
+    }
+
 def yaw_error_stats(ref, other):
     errs = []
     for a, b in zip(ref, other):
@@ -666,12 +692,25 @@ summary = {
         "imu_cov_wz_relay": mean_of(lambda s: s.get("imu_with_covariance"), "cov_wz"),
     },
     "final_relative_yaw_deg": {},
+    "xy_drift": {},
     "yaw_error_vs_gazebo": {},
+}
+
+xy_sources = {
+    "gazebo": lambda s: s.get("gazebo"),
+    "odom_msg": lambda s: s.get("odom"),
+    "odom_with_covariance": lambda s: s.get("odom_with_covariance"),
+    "odometry_filtered": lambda s: s.get("odometry_filtered"),
+    "tf_odom_base": lambda s: (s.get("tf") or {}).get("odom_base"),
+    "tf_map_base": lambda s: (s.get("tf") or {}).get("map_base"),
 }
 
 for key, vals in series.items():
     fv = final_valid(vals)
     summary["final_relative_yaw_deg"][key] = math.degrees(fv) if fv is not None else None
+
+for key, getter in xy_sources.items():
+    summary["xy_drift"][key] = xy_drift_stats(samples, getter)
 
 for key in ("odom_msg", "odom_with_covariance", "odometry_filtered", "imu", "imu_with_covariance", "tf_odom_base", "tf_map_base"):
     summary["yaw_error_vs_gazebo"][key] = yaw_error_stats(series["gazebo"], series[key])
@@ -682,6 +721,9 @@ print("\n=== Turn Drift Diagnostic Summary ===")
 print(f"samples={summary['samples_count']} duration_sec={summary['duration_sec']} turn_mode={turn_mode} commanded_turn_deg={turn_deg}")
 print("Final relative yaw (deg):")
 for key, val in summary["final_relative_yaw_deg"].items():
+    print(f"- {key}: {val}")
+print("XY drift during pure turn:")
+for key, val in summary["xy_drift"].items():
     print(f"- {key}: {val}")
 print("Yaw error vs Gazebo:")
 for key, val in summary["yaw_error_vs_gazebo"].items():

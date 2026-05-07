@@ -14,6 +14,7 @@ install(PROGRAMS
     scripts/scan_frame_relay.py
     scripts/scan_merge.py
     scripts/sim_covariance_relay.py
+    scripts/square_test.py
     DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()

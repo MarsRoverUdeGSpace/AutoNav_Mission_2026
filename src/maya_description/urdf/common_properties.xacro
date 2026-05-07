@@ -48,7 +48,9 @@
 
   <!-- Wheel geometry (using drive_wheel_radius defined below) -->
   <xacro:property name="wheel_radius" value="${drive_wheel_radius}"/>
-  <!-- Approximate wheel width (meters) – tune as needed -->
+  <!-- Collision wheel width kept narrow for stable skid-steer simulation.
+       Matching the full STL width over-constrains lateral scrub and can make
+       pure angular commands push the rover forward/back instead of yawing. -->
   <xacro:property name="wheel_width" value="0.05"/>
 
   <!-- Wheel mass (per wheel) – from CAD -->
@@ -115,7 +117,7 @@
 
   <!-- Default wheel spin axes.
        Right wheels keep the mirrored sign required by the current Maya CAD and
-       Gazebo drive setup. Normalizing the sign regressed actual body rotation. -->
+       Gazebo drive setup. Normalizing the sign regressed command mapping. -->
   <xacro:property name="wheel_axis_left"  value="0 0 1"/>
   <xacro:property name="wheel_axis_right" value="0 0 -1"/>
 
