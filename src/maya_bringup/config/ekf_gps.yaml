@@ -1,0 +1,134 @@
+# GPS/global-navigation localization for Maya.
+# Matches Nav2 GPS tutorial architecture while preserving firmware topic names:
+#   GNSS: /sensors/gnss/fix, frame gnss_link
+#   local odom: odom -> base_footprint
+#   global correction: map -> odom
+
+ekf_filter_node_odom:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    publish_acceleration: false
+    publish_tf: true
+    print_diagnostics: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # Local continuous odometry. Fuse velocity, not absolute x/y pose.
+    # This keeps odom->base_footprint continuous and prevents Gazebo/world pose
+    # settling or tiny pose noise from looking like global localization drift.
+    odom0: /odom_with_covariance
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+
+    # IMU provides planar yaw and yaw rate for the local filter.
+    imu0: /imu_with_covariance
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+    imu0_differential: false
+    imu0_relative: false
+
+    use_control: false
+
+    process_noise_covariance: [0.02, 0.02, 1e6,
+                               1e6, 1e6, 0.01,
+                               0.1, 1e6, 1e6,
+                               1e6, 1e6, 0.05,
+                               1e6, 1e6, 1e6]
+    initial_estimate_covariance: [1e-3, 1e-3, 1e6,
+                                  1e6, 1e6, 1e-3,
+                                  1e-2, 1e6, 1e6,
+                                  1e6, 1e6, 1e-2,
+                                  1e6, 1e6, 1e6]
+
+ekf_filter_node_map:
+  ros__parameters:
+    frequency: 15.0
+    sensor_timeout: 0.5
+    two_d_mode: true
+    publish_acceleration: false
+    publish_tf: true
+    print_diagnostics: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: map
+
+    # Global localization follows the Nav2 GPS tutorial shape:
+    # local odom constrains velocity/yaw-rate, GPS owns global x/y correction,
+    # and IMU provides heading. Do not fuse local x/y pose here.
+    odom0: /odom_with_covariance
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_differential: false
+    odom1_relative: false
+
+    imu0: /imu_with_covariance
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+    imu0_differential: false
+    imu0_relative: false
+
+    use_control: false
+
+    process_noise_covariance: [0.001, 0.001, 1e6,
+                               1e6, 1e6, 0.0005,
+                               0.0005, 0.0005, 1e6,
+                               1e6, 1e6, 0.0005,
+                               1e6, 1e6, 1e6]
+    initial_estimate_covariance: [0.25, 0.25, 1e6,
+                                  1e6, 1e6, 0.1,
+                                  0.05, 0.05, 1e6,
+                                  1e6, 1e6, 0.05,
+                                  1e6, 1e6, 1e6]
+
+navsat_transform:
+  ros__parameters:
+    frequency: 30.0
+    delay: 8.0
+    magnetic_declination_radians: 0.0
+    yaw_offset: 0.0
+    zero_altitude: true
+    broadcast_cartesian_transform: true
+    broadcast_utm_transform: false
+    publish_filtered_gps: true
+    # Gazebo's IMU yaw is not reliably ENU-aligned for Maya right now. Use the
+    # local odom heading as the navsat yaw source, matching the Nav2 GPS tutorial
+    # and avoiding a startup heading tug-of-war between IMU and odom.
+    use_odometry_yaw: true
+    wait_for_datum: false

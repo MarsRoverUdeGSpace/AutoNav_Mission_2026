@@ -87,6 +87,24 @@ Pub6 --> Jetson: /roboclaw/status
 
 ---
 
+## Current autonomy direction: direct GNSS waypoint first
+
+As of 2026-05-13, the immediate Maya GNSS milestone is **not** Nav2 GPS/global localization. The repo contains a checkpointed `feature/global_navigation` scaffold for Gazebo GNSS, georeferenced worlds, `robot_localization` GPS/global EKF, and Nav2 GPS experiments, but that path is intentionally parked until a simpler controller works.
+
+Next implementation target: `src/maya_bringup/scripts/gnss_waypoint_test.py`. The script should subscribe to `/sensors/gnss/fix` and `/odometry/filtered`, compute ENU bearing/distance to a target lat/lon, use encoder+IMU odom yaw for heading control, and publish `/cmd_vel` directly. Nav2 should be off for the first tests.
+
+Key safety/architecture notes:
+
+- GNSS bearing is ENU (`east = 0`, `north = +90 deg`); odom yaw may be boot-relative, so yaw alignment/calibration is mandatory.
+- Treat GNSS as noisy global position only; do not use low-speed GNSS course as heading.
+- First tests should use a flat `3-5 m` waypoint, speed `<= 0.15 m/s`, and a generous goal radius around `5 m`.
+- Direct failsafes must dominate `/cmd_vel`: stale data, bad GNSS/covariance/jumps, excessive pitch/roll, no-progress, yaw-not-improving, and distance-increasing timeout.
+- ZED/vSLAM is optional later for obstacle/slope lookahead and odom cross-checking, not a first dependency.
+
+The stable simulation default should remain `random_world.sdf` with `use_gps_localization:=false`; GPS/Nav2 global localization is an explicit experiment, not the default bringup path.
+
+---
+
 ## Repo layout
 
 > This is the intended structure for the Autonomous Navigation stack; folders will appear as they are implemented.

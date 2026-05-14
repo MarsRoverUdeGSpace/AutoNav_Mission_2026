@@ -6,7 +6,7 @@ import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, NavSatFix
 
 
 def diagonal_covariance(values):
@@ -31,11 +31,15 @@ class SimCovarianceRelay(Node):
         self.declare_parameter('odom_output_topic', '/odom_with_covariance')
         self.declare_parameter('imu_input_topic', '/imu')
         self.declare_parameter('imu_output_topic', '/imu_with_covariance')
+        self.declare_parameter('gnss_input_topic', '/sensors/gnss/fix')
+        self.declare_parameter('gnss_output_topic', '/sensors/gnss/fix_with_covariance')
 
         odom_input = self.get_parameter('odom_input_topic').value
         odom_output = self.get_parameter('odom_output_topic').value
         imu_input = self.get_parameter('imu_input_topic').value
         imu_output = self.get_parameter('imu_output_topic').value
+        gnss_input = self.get_parameter('gnss_input_topic').value
+        gnss_output = self.get_parameter('gnss_output_topic').value
 
         # Indexes in 6x6 covariance matrices are:
         # [x, y, z, roll, pitch, yaw] and [vx, vy, vz, vroll, vpitch, vyaw].
@@ -70,13 +74,23 @@ class SimCovarianceRelay(Node):
             4: 1e6,
             8: 1e6,
         })
+        # Sim GNSS is idealized by Gazebo, but navsat_transform/global EKF need
+        # realistic uncertainty so map->odom does not visibly chase tiny GPS creep.
+        # Values are variances in m^2: 5 m horizontal sigma, 10 m vertical sigma.
+        self._gnss_position_covariance = diagonal_covariance_3x3({
+            0: 25.0,
+            4: 25.0,
+            8: 100.0,
+        })
 
         # Publish rewritten topics with the default reliable QoS so EKF, diagnostics,
         # and generic ROS tools can all subscribe without QoS negotiation failures.
         self._odom_pub = self.create_publisher(Odometry, odom_output, 10)
         self._imu_pub = self.create_publisher(Imu, imu_output, 10)
+        self._gnss_pub = self.create_publisher(NavSatFix, gnss_output, 10)
         self.create_subscription(Odometry, odom_input, self._handle_odom, qos_profile_sensor_data)
         self.create_subscription(Imu, imu_input, self._handle_imu, qos_profile_sensor_data)
+        self.create_subscription(NavSatFix, gnss_input, self._handle_gnss, qos_profile_sensor_data)
 
     def _handle_odom(self, msg: Odometry) -> None:
         out = copy.deepcopy(msg)
@@ -90,6 +104,12 @@ class SimCovarianceRelay(Node):
         out.angular_velocity_covariance = self._imu_angular_velocity_covariance
         out.linear_acceleration_covariance = self._imu_linear_acceleration_covariance
         self._imu_pub.publish(out)
+
+    def _handle_gnss(self, msg: NavSatFix) -> None:
+        out = copy.deepcopy(msg)
+        out.position_covariance = self._gnss_position_covariance
+        out.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+        self._gnss_pub.publish(out)
 
 
 def main() -> None:

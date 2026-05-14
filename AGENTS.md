@@ -1,5 +1,77 @@
 ---
 
+## 8. Current GNSS/global-navigation checkpoint (2026-05-13)
+
+The local `feature/global_navigation` work is a research/checkpoint branch, not the immediate field-test path. It adds useful GNSS simulation/global-navigation scaffolding:
+
+- Gazebo NavSat support through `gnss_link` and `/sensors/gnss/fix`.
+- GNSS bridge wiring in `gazebo_bridge.yaml`.
+- GNSS covariance relay support in `sim_covariance_relay.py`.
+- Georeferenced worlds, including `sonoma_raceway.sdf`, plus georeferencing for `random_world.sdf`.
+- Experimental `robot_localization` GPS/global EKF and Nav2 GPS config files (`ekf_gps.yaml`, `nav2_gps_params.yaml`).
+
+Important guardrail: this branch must keep the stable SIM defaults intact unless explicitly testing GPS mode:
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  world:=random_world.sdf \
+  use_gps_localization:=false
+```
+
+Use GPS/global localization only as an explicit experiment:
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  world:=sonoma_raceway.sdf \
+  use_gps_localization:=true
+```
+
+Do not treat the GPS Nav2 path as validated. It remains a parked research scaffold until the direct GNSS waypoint controller succeeds in hardware-like tests.
+
+## 8. Current GNSS waypoint architecture plan (2026-05-13)
+
+For the next Maya autonomy milestone, park Nav2 GPS/global localization and implement a direct waypoint controller first. Target file:
+
+- `src/maya_bringup/scripts/gnss_waypoint_test.py`
+
+Planned node shape:
+
+- Subscribe `/sensors/gnss/fix` for current latitude/longitude.
+- Subscribe `/odometry/filtered` for smooth local motion and yaw from encoder+IMU fusion.
+- Optionally subscribe IMU for pitch/roll safety veto.
+- Publish `/cmd_vel` directly, with manual/e-stop/teleop mux priority above this node.
+
+Control logic:
+
+1. Convert current and target lat/lon to local ENU meters.
+2. Compute desired bearing as `desired_yaw = atan2(d_north, d_east)`.
+3. Compare against current odom/IMU yaw with angle wrapping.
+4. Rotate in place if yaw error is large.
+5. Otherwise drive forward slowly with angular correction.
+6. Stop inside a realistic first-test goal radius (`3-5 m`).
+
+Critical blocker to solve explicitly: yaw alignment. GNSS bearing is earth ENU (`east = 0`, `north = +90 deg`), while Maya odom yaw may be boot-relative. The script must support `yaw_alignment_mode`, `yaw_offset_rad`, or a motion-calibration step; do not assume frames already align.
+
+Required first-run safety gates:
+
+- Stale GNSS or stale odom -> stop.
+- Bad GNSS status/covariance or impossible GNSS jump -> reject/stop.
+- Pitch/roll above limit -> stop.
+- Commanded forward motion with no encoder/odom progress -> stop.
+- Yaw error not improving during rotate -> stop.
+- Distance-to-goal increasing for too long -> stop.
+
+First field/sim profile should be deliberately boring: flat open area, waypoint `3-5 m` away, speed `<= 0.15 m/s`, goal radius around `5 m`, Nav2 off, human/manual stop ready, and logs for lat/lon, distance, desired yaw, current yaw, yaw error, command, and active failsafe reason.
+
+Staging:
+
+1. Level 1: raw GNSS bearing + encoder/IMU yaw controller.
+2. Level 2: lightweight GNSS correction to local odom.
+3. Level 3: revisit EKF/global fusion or Nav2 only after Level 1 works.
+
+ZED/vSLAM remains optional for later obstacle/slope lookahead and odom cross-checks. It is not a dependency for the first GNSS waypoint milestone.
+
+
 ## 8. Current HW Baseline Command (2026-02-27)
 
 Use this command as the minimal Jetson hardware baseline for reliability testing with `tools/nav2_reliability_trials.sh`:

@@ -58,6 +58,37 @@
     </sensor>
   </gazebo>
 
+  <!-- GNSS/NavSat Sensor Plugin
+       Sim publishes the same topic/frame as Kukulcan firmware so downstream
+       localization does not care whether sim or hardware is the source. -->
+  <gazebo reference="gnss_link">
+    <sensor name="gnss_sensor" type="navsat">
+      <always_on>true</always_on>
+      <update_rate>5</update_rate>
+      <visualize>true</visualize>
+      <topic>/sensors/gnss/fix</topic>
+      <gz_frame_id>gnss_link</gz_frame_id>
+      <navsat>
+        <position_sensing>
+          <horizontal>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <!-- Gazebo NavSat horizontal noise is applied in geographic coordinates;
+                   keep sim noise at zero here and model GPS trust via ROS covariance. -->
+              <stddev>0.0</stddev>
+            </noise>
+          </horizontal>
+          <vertical>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.0</stddev>
+            </noise>
+          </vertical>
+        </position_sensing>
+      </navsat>
+    </sensor>
+  </gazebo>
+
   <!-- LiDAR Sensor Plugin -->
   <gazebo reference="lidar_link">
     <sensor name="lidar" type="gpu_lidar">

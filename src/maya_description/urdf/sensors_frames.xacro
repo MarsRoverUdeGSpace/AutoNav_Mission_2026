@@ -16,6 +16,23 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
+  <!-- GNSS Link and Joint.
+       Keep this frame/topic naming aligned with Kukulcan firmware.
+       /sensors/gnss/fix stamped in frame gnss_link. -->
+  <link name="gnss_link">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="gnss_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="gnss_link"/>
+    <origin xyz="0 0 0.20" rpy="0 0 0"/>
+  </joint>
+
   <!-- LiDAR Link and Joint -->
   <link name="lidar_link">
     <inertial>

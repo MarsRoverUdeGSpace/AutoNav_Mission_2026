@@ -15,6 +15,8 @@
     <arg name="rviz" default="true" />
     <!-- Allow motion/estimation-only tests, e.g. square_test.py, without starting SLAM/Nav2. -->
     <arg name="use_nav2" default="true" />
+    <!-- GPS/GNSS localization mode matches Kukulcan firmware topics. Set false to return to SLAM baseline. -->
+    <arg name="use_gps_localization" default="false" />
     <!-- Optional depth->scan helper pipeline; disable to isolate lidar-only baseline behavior. -->
     <arg name="use_depth_scan_pipeline" default="false" />
     <!-- Optional RTAB-Map RGB-D odometry publisher for /visual_odom (used by EKF odom1). -->
@@ -44,6 +46,8 @@
         <param name="odom_output_topic" value="/odom_with_covariance" />
         <param name="imu_input_topic" value="/imu" />
         <param name="imu_output_topic" value="/imu_with_covariance" />
+        <param name="gnss_input_topic" value="/sensors/gnss/fix" />
+        <param name="gnss_output_topic" value="/sensors/gnss/fix_with_covariance" />
     </node>
     <node if="$(var use_depth_scan_pipeline)" pkg="pointcloud_to_laserscan" exec="pointcloud_to_laserscan_node" name="depth_cloud_to_scan" output="screen">
         <param name="target_frame" value="base_footprint" />
@@ -82,18 +86,53 @@
         <remap from="imu" to="/imu" />
         <remap from="odom" to="/visual_odom" />
     </node>
-    <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+    <!-- SLAM/local-only baseline EKF. Kept intact for regression/debug via use_gps_localization:=false. -->
+    <node unless="$(var use_gps_localization)" pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
         <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
         <param name="odom0" value="/odom_with_covariance" />
         <param name="imu0" value="/imu_with_covariance" />
         <param name="use_sim_time" value="true" />
     </node>
-    <include if="$(var use_nav2)" file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
-        <arg name="use_sim_time" value="True" />
-        <arg name="slam" value="True" />
-        <arg name="autostart" value="True" />
-        <arg name="use_composition" value="False" />
-        <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
-    </include>
+
+    <!-- GPS/GNSS localization: local EKF owns odom->base_footprint; global EKF owns map->odom. -->
+    <node if="$(var use_gps_localization)" pkg="robot_localization" exec="ekf_node" name="ekf_filter_node_odom" output="screen">
+        <param from="$(find-pkg-share maya_bringup)/config/ekf_gps.yaml" />
+        <param name="use_sim_time" value="true" />
+    </node>
+    <node if="$(var use_gps_localization)" pkg="robot_localization" exec="navsat_transform_node" name="navsat_transform" output="screen">
+        <param from="$(find-pkg-share maya_bringup)/config/ekf_gps.yaml" />
+        <param name="use_sim_time" value="true" />
+        <remap from="gps/fix" to="/sensors/gnss/fix_with_covariance" />
+        <remap from="imu" to="/imu_with_covariance" />
+        <remap from="odometry/filtered" to="/odometry/filtered" />
+        <remap from="odometry/gps" to="/odometry/gps" />
+        <remap from="gps/filtered" to="/sensors/gnss/filtered" />
+    </node>
+    <node if="$(var use_gps_localization)" pkg="robot_localization" exec="ekf_node" name="ekf_filter_node_map" output="screen">
+        <param from="$(find-pkg-share maya_bringup)/config/ekf_gps.yaml" />
+        <param name="use_sim_time" value="true" />
+        <remap from="odometry/filtered" to="/odometry/global" />
+    </node>
+
+    <group if="$(var use_nav2)">
+        <!-- SLAM baseline Nav2 path: Nav2 starts slam_toolbox for map->odom. -->
+        <include unless="$(var use_gps_localization)" file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
+            <arg name="use_sim_time" value="True" />
+            <arg name="slam" value="True" />
+            <arg name="autostart" value="True" />
+            <arg name="use_composition" value="False" />
+            <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
+        </include>
+
+        <!-- GPS Nav2 path: robot_localization provides localization, so Nav2 must not launch SLAM or AMCL. -->
+        <include if="$(var use_gps_localization)" file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
+            <arg name="use_sim_time" value="True" />
+            <arg name="slam" value="False" />
+            <arg name="use_localization" value="False" />
+            <arg name="autostart" value="True" />
+            <arg name="use_composition" value="False" />
+            <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_gps_params.yaml" />
+        </include>
+    </group>
     <node if="$(var rviz)" pkg="rviz2" exec="rviz2" args="-d $(var rviz_path)" />
 </launch>
