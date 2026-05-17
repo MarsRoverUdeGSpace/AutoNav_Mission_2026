@@ -58,12 +58,12 @@ class SimCovarianceRelay(Node):
         self._imu_orientation_covariance = diagonal_covariance_3x3({
             0: 1e6,
             4: 1e6,
-            8: 0.05,
+            8: 0.02,
         })
         self._imu_angular_velocity_covariance = diagonal_covariance_3x3({
             0: 1e6,
             4: 1e6,
-            8: 0.02,
+            8: 0.01,
         })
         self._imu_linear_acceleration_covariance = diagonal_covariance_3x3({
             0: 1e6,
