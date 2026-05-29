@@ -89,6 +89,10 @@
     <arg name="gnss_initial_compass_heading_deg" default="nan" />
     <arg name="gnss_yaw_offset_rad" default="nan" />
     <arg name="gnss_allow_odom_yaw_as_enu" default="false" />
+    <arg name="gnss_auto_yaw_calibration" default="false" />
+    <arg name="gnss_auto_yaw_calibration_min_gnss_m" default="3.0" />
+    <arg name="gnss_auto_yaw_calibration_min_odom_m" default="1.0" />
+    <arg name="gnss_auto_yaw_calibration_max_correction_rad" default="3.14159" />
     <arg name="gnss_goal_reached_mode_hold_s" default="5.0" />
     <arg name="gnss_goal_reached_required_samples" default="3" />
     <arg name="gnss_waypoint_timeout_s" default="180.0" />
@@ -403,6 +407,10 @@
             <param name="initial_compass_heading_deg" value="$(var gnss_initial_compass_heading_deg)" />
             <param name="yaw_offset_rad" value="$(var gnss_yaw_offset_rad)" />
             <param name="allow_odom_yaw_as_enu" value="$(var gnss_allow_odom_yaw_as_enu)" />
+            <param name="auto_yaw_calibration" value="$(var gnss_auto_yaw_calibration)" />
+            <param name="auto_yaw_calibration_min_gnss_m" value="$(var gnss_auto_yaw_calibration_min_gnss_m)" />
+            <param name="auto_yaw_calibration_min_odom_m" value="$(var gnss_auto_yaw_calibration_min_odom_m)" />
+            <param name="auto_yaw_calibration_max_correction_rad" value="$(var gnss_auto_yaw_calibration_max_correction_rad)" />
             <param name="gnss_topic" value="/sensors/gnss/fix" />
             <param name="odom_topic" value="/odometry/filtered" />
             <param name="cmd_vel_topic" value="/cmd_vel" />

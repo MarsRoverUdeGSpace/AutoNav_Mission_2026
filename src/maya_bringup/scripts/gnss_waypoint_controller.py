@@ -43,6 +43,10 @@ class GnssWaypointController(Node):
         self.declare_parameter('initial_compass_heading_deg', float('nan'))
         self.declare_parameter('yaw_offset_rad', float('nan'))
         self.declare_parameter('allow_odom_yaw_as_enu', False)
+        self.declare_parameter('auto_yaw_calibration', False)
+        self.declare_parameter('auto_yaw_calibration_min_gnss_m', 3.0)
+        self.declare_parameter('auto_yaw_calibration_min_odom_m', 1.0)
+        self.declare_parameter('auto_yaw_calibration_max_correction_rad', math.pi)
         self.declare_parameter('gnss_topic', '/sensors/gnss/fix')
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
@@ -67,6 +71,25 @@ class GnssWaypointController(Node):
         self.gnss_timeout_s = self.get_parameter('gnss_timeout_s').value
         self.odom_timeout_s = self.get_parameter('odom_timeout_s').value
         self.allow_odom_yaw_as_enu = self.get_parameter('allow_odom_yaw_as_enu').value
+        self.auto_yaw_calibration = bool(
+            self.get_parameter('auto_yaw_calibration').value
+        )
+        self.auto_yaw_calibration_min_gnss_m = max(
+            0.1,
+            float(self.get_parameter('auto_yaw_calibration_min_gnss_m').value),
+        )
+        self.auto_yaw_calibration_min_odom_m = max(
+            0.1,
+            float(self.get_parameter('auto_yaw_calibration_min_odom_m').value),
+        )
+        self.auto_yaw_calibration_max_correction_rad = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    'auto_yaw_calibration_max_correction_rad'
+                ).value
+            ),
+        )
         self.goal_reached_mode_value = int(
             self.get_parameter('goal_reached_mode_value').value
         )
@@ -103,6 +126,9 @@ class GnssWaypointController(Node):
         self.fault_reason: str | None = None
         self.last_goal_counted_gnss_stamp: tuple[int, int] | None = None
         self.last_report_time = 0.0
+        self.yaw_calibration_reference: dict[str, float] | None = None
+        self.yaw_calibration_updates = 0
+        self.yaw_reference_source = self._yaw_reference_source()
 
         self.cmd_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10
@@ -133,6 +159,11 @@ class GnssWaypointController(Node):
         self.get_logger().info(
             f'Loaded {len(self.waypoints)} ordered GNSS waypoint(s).'
         )
+        if self.auto_yaw_calibration:
+            self.get_logger().warn(
+                'Automatic yaw calibration is enabled. Initial heading is only a '
+                'bootstrap; yaw_offset will be corrected from GNSS-vs-odom motion.'
+            )
 
     def _load_waypoints(self) -> list[tuple[float, float]]:
         configured_waypoints = str(self.get_parameter('waypoints').value).strip()
@@ -177,7 +208,27 @@ class GnssWaypointController(Node):
             self.get_logger().warn('Using raw odom yaw as ENU yaw by operator request.')
             return 0.0
 
+        if self.auto_yaw_calibration:
+            self.get_logger().warn(
+                'No initial Earth yaw reference supplied; using provisional '
+                'yaw_offset_rad=0.0 until GNSS motion calibration has enough travel.'
+            )
+            return 0.0
+
         return None
+
+    def _yaw_reference_source(self) -> str:
+        configured_offset = float(self.get_parameter('yaw_offset_rad').value)
+        if math.isfinite(configured_offset):
+            return 'configured'
+        compass_heading = float(self.get_parameter('initial_compass_heading_deg').value)
+        if math.isfinite(compass_heading):
+            return 'compass'
+        if self.auto_yaw_calibration:
+            return 'provisional'
+        if self.allow_odom_yaw_as_enu:
+            return 'odom'
+        return 'none'
 
     def _on_gnss(self, msg: NavSatFix) -> None:
         self.latest_gnss = msg
@@ -193,6 +244,7 @@ class GnssWaypointController(Node):
             if math.isfinite(compass_heading):
                 odom_yaw = self._odom_yaw(msg)
                 self.yaw_offset = wrap_pi(compass_deg_to_enu_yaw(compass_heading) - odom_yaw)
+                self.yaw_reference_source = 'compass'
                 self.get_logger().info(
                     f'Computed yaw_offset_rad={self.yaw_offset:.3f} '
                     f'from initial_compass_heading_deg={compass_heading:.1f}'
@@ -312,6 +364,20 @@ class GnssWaypointController(Node):
         else:
             cmd.linear.x = 0.0
 
+        calibrated = self._maybe_auto_calibrate_yaw(now, cmd.linear.x)
+        if calibrated:
+            earth_yaw = wrap_pi(odom_yaw + self.yaw_offset)
+            yaw_error = wrap_pi(desired_yaw - earth_yaw)
+            cmd.angular.z = self._clamp(
+                self.angular_kp * yaw_error,
+                -self.max_angular_speed,
+                self.max_angular_speed,
+            )
+            if abs(yaw_error) <= self.yaw_tolerance:
+                cmd.linear.x = min(self.max_linear_speed, self.linear_kp * distance)
+            else:
+                cmd.linear.x = 0.0
+
         self.cmd_pub.publish(cmd)
         self._publish_status(
             'navigating',
@@ -330,7 +396,9 @@ class GnssWaypointController(Node):
                 f'GNSS nav waypoint={self.active_waypoint_index + 1}/{len(self.waypoints)} '
                 f'distance={distance:.2f}m east={east:.2f}m north={north:.2f}m '
                 f'desired_yaw={desired_yaw:.2f} earth_yaw={earth_yaw:.2f} '
-                f'yaw_error={yaw_error:.2f} reached_samples={self.inside_goal_samples}/'
+                f'yaw_error={yaw_error:.2f} yaw_ref={self.yaw_reference_source} '
+                f'yaw_cal_updates={self.yaw_calibration_updates} '
+                f'reached_samples={self.inside_goal_samples}/'
                 f'{self.goal_reached_required_samples} '
                 f'cmd=({cmd.linear.x:.2f}, {cmd.angular.z:.2f})'
             )
@@ -342,6 +410,7 @@ class GnssWaypointController(Node):
         self.waypoint_progress_started = False
         self.best_distance_this_waypoint = float('inf')
         self.last_progress_time = now
+        self.yaw_calibration_reference = None
 
     def _watchdog_faulted(self, now: float, distance: float) -> bool:
         if not self.waypoint_progress_started:
@@ -377,6 +446,71 @@ class GnssWaypointController(Node):
             return True
 
         return False
+
+    def _maybe_auto_calibrate_yaw(self, now: float, planned_linear_x: float) -> bool:
+        if not self.auto_yaw_calibration:
+            return False
+        if self.latest_gnss is None or self.latest_odom is None:
+            return False
+        if planned_linear_x <= 0.0:
+            if self.yaw_calibration_reference is None:
+                self._set_yaw_calibration_reference(now)
+            return False
+
+        if self.yaw_calibration_reference is None:
+            self._set_yaw_calibration_reference(now)
+            return False
+
+        ref = self.yaw_calibration_reference
+        gnss_distance, true_heading, _, _ = distance_and_bearing_enu(
+            ref['latitude'],
+            ref['longitude'],
+            self.latest_gnss.latitude,
+            self.latest_gnss.longitude,
+        )
+        odom_dx = self.latest_odom.pose.pose.position.x - ref['odom_x']
+        odom_dy = self.latest_odom.pose.pose.position.y - ref['odom_y']
+        odom_distance = math.hypot(odom_dx, odom_dy)
+        if (
+            gnss_distance < self.auto_yaw_calibration_min_gnss_m
+            or odom_distance < self.auto_yaw_calibration_min_odom_m
+        ):
+            return False
+
+        odom_heading = math.atan2(odom_dy, odom_dx)
+        measured_offset = wrap_pi(true_heading - odom_heading)
+        correction = wrap_pi(measured_offset - self.yaw_offset)
+        if abs(correction) > self.auto_yaw_calibration_max_correction_rad:
+            self.get_logger().warn(
+                f'Rejecting yaw auto-calibration correction={correction:.3f}rad '
+                f'from gnss_distance={gnss_distance:.2f}m odom_distance={odom_distance:.2f}m.'
+            )
+            self._set_yaw_calibration_reference(now)
+            return False
+
+        previous_offset = self.yaw_offset
+        self.yaw_offset = measured_offset
+        self.yaw_reference_source = 'motion'
+        self.yaw_calibration_updates += 1
+        self._set_yaw_calibration_reference(now)
+        self.get_logger().warn(
+            f'Auto-calibrated yaw_offset_rad {previous_offset:.3f} -> '
+            f'{self.yaw_offset:.3f} using GNSS track={true_heading:.3f}, '
+            f'odom track={odom_heading:.3f}, gnss_distance={gnss_distance:.2f}m, '
+            f'odom_distance={odom_distance:.2f}m.'
+        )
+        return True
+
+    def _set_yaw_calibration_reference(self, now: float) -> None:
+        if self.latest_gnss is None or self.latest_odom is None:
+            return
+        self.yaw_calibration_reference = {
+            'time': now,
+            'latitude': self.latest_gnss.latitude,
+            'longitude': self.latest_gnss.longitude,
+            'odom_x': self.latest_odom.pose.pose.position.x,
+            'odom_y': self.latest_odom.pose.pose.position.y,
+        }
 
     def _fault_stop(self, reason: str) -> None:
         self.fault_reason = reason
@@ -447,6 +581,7 @@ class GnssWaypointController(Node):
             'cmd_linear': cmd_linear,
             'cmd_angular': cmd_angular,
             'best_distance_m': self.best_distance_this_waypoint,
+            'yaw_offset': self.yaw_offset,
         }
         for name, value in optional_fields.items():
             if value is not None and math.isfinite(value):
@@ -454,6 +589,8 @@ class GnssWaypointController(Node):
         active_fault = fault or self.fault_reason
         if active_fault:
             fields.append(f'fault="{active_fault}"')
+        fields.append(f'yaw_ref={self.yaw_reference_source}')
+        fields.append(f'yaw_cal_updates={self.yaw_calibration_updates}')
 
         msg = String()
         msg.data = ' '.join(fields)
