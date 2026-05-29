@@ -10,6 +10,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix, NavSatStatus
+from std_msgs.msg import String
 from std_msgs.msg import UInt8
 
 from gnss_waypoint_common import (
@@ -46,9 +47,14 @@ class GnssWaypointController(Node):
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('mode_topic', '/mode')
+        self.declare_parameter('status_topic', '/gnss_waypoint/status')
         self.declare_parameter('goal_reached_mode_value', 2)
         self.declare_parameter('normal_mode_value', 1)
         self.declare_parameter('goal_reached_mode_hold_s', 5.0)
+        self.declare_parameter('goal_reached_required_samples', 3)
+        self.declare_parameter('waypoint_timeout_s', 180.0)
+        self.declare_parameter('no_progress_timeout_s', 30.0)
+        self.declare_parameter('no_progress_min_delta_m', 1.0)
 
         self.waypoints = self._load_waypoints()
         self.active_waypoint_index = 0
@@ -68,6 +74,18 @@ class GnssWaypointController(Node):
         self.goal_reached_mode_hold_s = max(
             0.0, float(self.get_parameter('goal_reached_mode_hold_s').value)
         )
+        self.goal_reached_required_samples = max(
+            1, int(self.get_parameter('goal_reached_required_samples').value)
+        )
+        self.waypoint_timeout_s = max(
+            0.0, float(self.get_parameter('waypoint_timeout_s').value)
+        )
+        self.no_progress_timeout_s = max(
+            0.0, float(self.get_parameter('no_progress_timeout_s').value)
+        )
+        self.no_progress_min_delta_m = max(
+            0.0, float(self.get_parameter('no_progress_min_delta_m').value)
+        )
 
         self.latest_gnss: NavSatFix | None = None
         self.latest_odom: Odometry | None = None
@@ -77,6 +95,13 @@ class GnssWaypointController(Node):
         self.stopped_at_goal = False
         self.goal_hold_until = 0.0
         self.mode_is_goal_reached = False
+        self.inside_goal_samples = 0
+        self.waypoint_start_time = time.monotonic()
+        self.waypoint_progress_started = False
+        self.best_distance_this_waypoint = float('inf')
+        self.last_progress_time = self.waypoint_start_time
+        self.fault_reason: str | None = None
+        self.last_goal_counted_gnss_stamp: tuple[int, int] | None = None
         self.last_report_time = 0.0
 
         self.cmd_pub = self.create_publisher(
@@ -84,6 +109,9 @@ class GnssWaypointController(Node):
         )
         self.mode_pub = self.create_publisher(
             UInt8, self.get_parameter('mode_topic').value, 10
+        )
+        self.status_pub = self.create_publisher(
+            String, self.get_parameter('status_topic').value, 10
         )
         self.create_subscription(
             NavSatFix,
@@ -185,8 +213,10 @@ class GnssWaypointController(Node):
             self.active_waypoint_index += 1
             if self.active_waypoint_index >= len(self.waypoints):
                 self.stopped_at_goal = True
+                self._publish_status('complete')
                 self.get_logger().info('Final GNSS waypoint complete.')
                 return
+            self._reset_waypoint_progress(now)
             self.get_logger().info(
                 f'Advancing to GNSS waypoint {self.active_waypoint_index + 1}/'
                 f'{len(self.waypoints)}.'
@@ -219,18 +249,53 @@ class GnssWaypointController(Node):
             target_latitude,
             target_longitude,
         )
+        if self._watchdog_faulted(now, distance):
+            return
+
         if distance <= self.goal_radius_m:
+            gnss_stamp = self._gnss_stamp_key(self.latest_gnss)
+            if gnss_stamp != self.last_goal_counted_gnss_stamp:
+                self.inside_goal_samples += 1
+                self.last_goal_counted_gnss_stamp = gnss_stamp
+            if self.inside_goal_samples < self.goal_reached_required_samples:
+                self._publish_stop()
+                self._publish_status(
+                    'reaching',
+                    distance=distance,
+                    desired_yaw=desired_yaw,
+                    east=east,
+                    north=north,
+                )
+                if now - self.last_report_time > 1.0:
+                    self.last_report_time = now
+                    self.get_logger().info(
+                        f'GNSS waypoint {self.active_waypoint_index + 1}/'
+                        f'{len(self.waypoints)} inside radius: '
+                        f'distance={distance:.2f}m samples={self.inside_goal_samples}/'
+                        f'{self.goal_reached_required_samples}'
+                    )
+                return
             self._publish_stop()
             self._publish_mode(self.goal_reached_mode_value)
             self.mode_is_goal_reached = True
             self.goal_hold_until = now + self.goal_reached_mode_hold_s
+            self._publish_status(
+                'reached',
+                distance=distance,
+                desired_yaw=desired_yaw,
+                east=east,
+                north=north,
+            )
             self.get_logger().info(
                 f'GNSS waypoint {self.active_waypoint_index + 1}/{len(self.waypoints)} '
                 f'reached: distance={distance:.2f}m east={east:.2f}m north={north:.2f}m. '
+                f'samples={self.inside_goal_samples}/{self.goal_reached_required_samples}. '
                 f'Publishing mode={self.goal_reached_mode_value} for '
                 f'{self.goal_reached_mode_hold_s:.1f}s.'
             )
             return
+        self.inside_goal_samples = 0
+        self.last_goal_counted_gnss_stamp = None
 
         odom_yaw = self._odom_yaw(self.latest_odom)
         earth_yaw = wrap_pi(odom_yaw + self.yaw_offset)
@@ -248,14 +313,77 @@ class GnssWaypointController(Node):
             cmd.linear.x = 0.0
 
         self.cmd_pub.publish(cmd)
+        self._publish_status(
+            'navigating',
+            distance=distance,
+            desired_yaw=desired_yaw,
+            earth_yaw=earth_yaw,
+            yaw_error=yaw_error,
+            east=east,
+            north=north,
+            cmd_linear=cmd.linear.x,
+            cmd_angular=cmd.angular.z,
+        )
         if now - self.last_report_time > 1.0:
             self.last_report_time = now
             self.get_logger().info(
                 f'GNSS nav waypoint={self.active_waypoint_index + 1}/{len(self.waypoints)} '
                 f'distance={distance:.2f}m east={east:.2f}m north={north:.2f}m '
                 f'desired_yaw={desired_yaw:.2f} earth_yaw={earth_yaw:.2f} '
-                f'yaw_error={yaw_error:.2f} cmd=({cmd.linear.x:.2f}, {cmd.angular.z:.2f})'
+                f'yaw_error={yaw_error:.2f} reached_samples={self.inside_goal_samples}/'
+                f'{self.goal_reached_required_samples} '
+                f'cmd=({cmd.linear.x:.2f}, {cmd.angular.z:.2f})'
             )
+
+    def _reset_waypoint_progress(self, now: float) -> None:
+        self.inside_goal_samples = 0
+        self.last_goal_counted_gnss_stamp = None
+        self.waypoint_start_time = now
+        self.waypoint_progress_started = False
+        self.best_distance_this_waypoint = float('inf')
+        self.last_progress_time = now
+
+    def _watchdog_faulted(self, now: float, distance: float) -> bool:
+        if not self.waypoint_progress_started:
+            self.waypoint_progress_started = True
+            self.waypoint_start_time = now
+            self.last_progress_time = now
+            self.best_distance_this_waypoint = distance
+            return False
+
+        if distance < (self.best_distance_this_waypoint - self.no_progress_min_delta_m):
+            self.best_distance_this_waypoint = distance
+            self.last_progress_time = now
+
+        elapsed = now - self.waypoint_start_time
+        if self.waypoint_timeout_s > 0.0 and elapsed > self.waypoint_timeout_s:
+            self._fault_stop(
+                f'Waypoint {self.active_waypoint_index + 1} timed out after '
+                f'{elapsed:.1f}s at distance={distance:.2f}m.'
+            )
+            return True
+
+        no_progress_elapsed = now - self.last_progress_time
+        if (
+            self.no_progress_timeout_s > 0.0
+            and no_progress_elapsed > self.no_progress_timeout_s
+            and distance > self.goal_radius_m
+        ):
+            self._fault_stop(
+                f'No GNSS progress for {no_progress_elapsed:.1f}s on waypoint '
+                f'{self.active_waypoint_index + 1}; distance={distance:.2f}m '
+                f'best={self.best_distance_this_waypoint:.2f}m.'
+            )
+            return True
+
+        return False
+
+    def _fault_stop(self, reason: str) -> None:
+        self.fault_reason = reason
+        self.stopped_at_goal = True
+        self._publish_stop()
+        self._publish_status('fault')
+        self.get_logger().error(reason)
 
     def _gnss_healthy(self, msg: NavSatFix) -> bool:
         if msg.status.status < NavSatStatus.STATUS_FIX:
@@ -271,8 +399,12 @@ class GnssWaypointController(Node):
         q = msg.pose.pose.orientation
         return yaw_from_quaternion(q.x, q.y, q.z, q.w)
 
+    def _gnss_stamp_key(self, msg: NavSatFix) -> tuple[int, int]:
+        return (int(msg.header.stamp.sec), int(msg.header.stamp.nanosec))
+
     def _stop_throttled(self, reason: str) -> None:
         self._publish_stop()
+        self._publish_status('waiting', fault=reason)
         now = time.monotonic()
         if now - self.last_report_time > 2.0:
             self.last_report_time = now
@@ -285,6 +417,47 @@ class GnssWaypointController(Node):
         msg = UInt8()
         msg.data = int(value)
         self.mode_pub.publish(msg)
+
+    def _publish_status(
+        self,
+        state: str,
+        *,
+        distance: float | None = None,
+        desired_yaw: float | None = None,
+        earth_yaw: float | None = None,
+        yaw_error: float | None = None,
+        east: float | None = None,
+        north: float | None = None,
+        cmd_linear: float | None = None,
+        cmd_angular: float | None = None,
+        fault: str | None = None,
+    ) -> None:
+        fields = [
+            f'state={state}',
+            f'waypoint={self.active_waypoint_index + 1}/{len(self.waypoints)}',
+            f'reached_samples={self.inside_goal_samples}/{self.goal_reached_required_samples}',
+        ]
+        optional_fields = {
+            'distance_m': distance,
+            'east_m': east,
+            'north_m': north,
+            'desired_yaw': desired_yaw,
+            'earth_yaw': earth_yaw,
+            'yaw_error': yaw_error,
+            'cmd_linear': cmd_linear,
+            'cmd_angular': cmd_angular,
+            'best_distance_m': self.best_distance_this_waypoint,
+        }
+        for name, value in optional_fields.items():
+            if value is not None and math.isfinite(value):
+                fields.append(f'{name}={value:.3f}')
+        active_fault = fault or self.fault_reason
+        if active_fault:
+            fields.append(f'fault="{active_fault}"')
+
+        msg = String()
+        msg.data = ' '.join(fields)
+        self.status_pub.publish(msg)
 
     @staticmethod
     def _clamp(value: float, lower: float, upper: float) -> float:

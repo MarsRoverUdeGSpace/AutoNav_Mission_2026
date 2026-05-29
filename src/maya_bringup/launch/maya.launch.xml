@@ -90,6 +90,10 @@
     <arg name="gnss_yaw_offset_rad" default="nan" />
     <arg name="gnss_allow_odom_yaw_as_enu" default="false" />
     <arg name="gnss_goal_reached_mode_hold_s" default="5.0" />
+    <arg name="gnss_goal_reached_required_samples" default="3" />
+    <arg name="gnss_waypoint_timeout_s" default="180.0" />
+    <arg name="gnss_no_progress_timeout_s" default="30.0" />
+    <arg name="gnss_no_progress_min_delta_m" default="1.0" />
 
     <!-- ArUco -->
     <arg name="use_aruco" default="$(var use_zed)" />
@@ -403,9 +407,14 @@
             <param name="odom_topic" value="/odometry/filtered" />
             <param name="cmd_vel_topic" value="/cmd_vel" />
             <param name="mode_topic" value="/mode" />
+            <param name="status_topic" value="/gnss_waypoint/status" />
             <param name="goal_reached_mode_value" value="2" />
             <param name="normal_mode_value" value="1" />
             <param name="goal_reached_mode_hold_s" value="$(var gnss_goal_reached_mode_hold_s)" />
+            <param name="goal_reached_required_samples" value="$(var gnss_goal_reached_required_samples)" />
+            <param name="waypoint_timeout_s" value="$(var gnss_waypoint_timeout_s)" />
+            <param name="no_progress_timeout_s" value="$(var gnss_no_progress_timeout_s)" />
+            <param name="no_progress_min_delta_m" value="$(var gnss_no_progress_min_delta_m)" />
         </node>
     </group>
 
