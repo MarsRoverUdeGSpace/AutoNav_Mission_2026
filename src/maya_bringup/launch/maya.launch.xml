@@ -51,6 +51,7 @@
     <!-- Optional subsystems (useful when IMU/pointcloud are disabled) -->
     <arg name="use_depth_scan" default="true" />
     <arg name="use_ekf" default="true" />
+    <arg name="use_gnss_waypoint_controller" default="false" />
     <!-- Keep this a plain boolean for ROS 2 Humble XML frontend compatibility.
          Hardware bringup should pass use_encoder_odom:=true explicitly. -->
     <arg name="use_encoder_odom" default="false" />
@@ -77,6 +78,16 @@
     <arg name="left_encoder_ticks_sign" default="1.0" />
     <arg name="right_encoder_ticks_sign" default="-1.0" />
     <arg name="encoder_publish_tf" default="false" />
+
+    <!-- Direct GNSS waypoint controller for first field tests. Run with Nav2 off. -->
+    <arg name="gnss_target_latitude" default="0.0" />
+    <arg name="gnss_target_longitude" default="0.0" />
+    <arg name="gnss_goal_radius_m" default="3.0" />
+    <arg name="gnss_max_linear_speed_mps" default="0.15" />
+    <arg name="gnss_max_angular_speed_radps" default="0.35" />
+    <arg name="gnss_initial_compass_heading_deg" default="nan" />
+    <arg name="gnss_yaw_offset_rad" default="nan" />
+    <arg name="gnss_allow_odom_yaw_as_enu" default="false" />
 
     <!-- ArUco -->
     <arg name="use_aruco" default="$(var use_zed)" />
@@ -373,6 +384,22 @@
             <arg name="map" value="$(var map)" />
             <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
         </include>
+    </group>
+
+    <group if="$(var use_gnss_waypoint_controller)">
+        <node pkg="maya_bringup" exec="gnss_waypoint_controller.py" name="gnss_waypoint_controller" output="screen">
+            <param name="target_latitude" value="$(var gnss_target_latitude)" />
+            <param name="target_longitude" value="$(var gnss_target_longitude)" />
+            <param name="goal_radius_m" value="$(var gnss_goal_radius_m)" />
+            <param name="max_linear_speed_mps" value="$(var gnss_max_linear_speed_mps)" />
+            <param name="max_angular_speed_radps" value="$(var gnss_max_angular_speed_radps)" />
+            <param name="initial_compass_heading_deg" value="$(var gnss_initial_compass_heading_deg)" />
+            <param name="yaw_offset_rad" value="$(var gnss_yaw_offset_rad)" />
+            <param name="allow_odom_yaw_as_enu" value="$(var gnss_allow_odom_yaw_as_enu)" />
+            <param name="gnss_topic" value="/sensors/gnss/fix" />
+            <param name="odom_topic" value="/odometry/filtered" />
+            <param name="cmd_vel_topic" value="/cmd_vel" />
+        </node>
     </group>
 
     <!-- RViz -->

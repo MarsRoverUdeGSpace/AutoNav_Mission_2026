@@ -12,6 +12,8 @@ install(
 )
 install(PROGRAMS
     scripts/encoder_odom.py
+    scripts/gnss_waypoint_common.py
+    scripts/gnss_waypoint_controller.py
     scripts/imu_sanitize_relay.py
     scripts/scan_frame_relay.py
     scripts/scan_merge.py
