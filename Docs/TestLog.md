@@ -23,3 +23,21 @@ Notes:
 
 ## Log
 
+Date: 2026-06-02
+Branch: humble-jetson
+Commit: 757f8f6
+Tag: v1.0.0
+Robot: Maya (Jetson Orin Nano, JP 6.x, Ubuntu 22.04, ROS 2 Humble)
+Mode: HW
+What changed:
+- Promoted validated GNSS waypoint navigation to stable release.
+- Integrated direct GNSS waypoint controller, ordered waypoint queues, 1.5 m fallback waypoint acceptance, motion-based yaw auto-calibration, and the validated minimal odom baseline.
+- Kept ZED VSLAM, ArUco, YOLO, and LD19 hardware bringup paths optional around the wheel odom + BNO055 local odometry baseline.
+Test procedure:
+- Field validation reported by maintainer: GNSS waypoint navigation completed successfully using the hardware/Jetson path.
+- Release branch history reviewed from `humble-jetson` through `develop` and `main`.
+Result:
+- PASS
+Notes:
+- Core System stable release provides the firmware-owned `/odom`, BNO055 IMU/magnetometer, GNSS, and `cmd_vel` contract consumed by this AutoNav release.
+- `humble-jetson` remains the source-of-truth historical branch for the field changes; `develop` and `main` carry the stable release promotion.

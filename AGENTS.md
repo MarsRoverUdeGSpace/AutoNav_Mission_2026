@@ -14,6 +14,22 @@ If these instructions ever conflict with explicit task instructions, the task in
 
 ---
 
+## 0. Stable release status (2026-06-02)
+
+The stable AutoNav release is based on the validated `humble-jetson` hardware line and is promoted through `develop` and `main`.
+
+Current stable facts:
+
+- GNSS waypoint navigation worked successfully on the rover hardware path.
+- Direct GNSS waypoint control, ordered waypoint queues, 1.5 m fallback waypoint acceptance, and motion-based yaw auto-calibration are integrated.
+- The validated local odom baseline uses the Core System firmware contract: `/odom`, BNO055 IMU/magnetometer, GNSS, and `cmd_vel`.
+- Wheel odom + BNO055 remains the default local odometry baseline; ZED VSLAM, ArUco, YOLO, and LD19 hardware paths are optional add-ons unless field testing proves they should be part of the default stack.
+- `humble-jetson` is the historical source branch for this release, `develop` is the integration branch, and `main` is for tagged stable releases.
+
+Older status sections below are retained as project history and should not override the stable release facts above.
+
+---
+
 ## 0. Current status (2026-02-03)
 
 - Default sim launch now targets `random_world.sdf` and keeps Gazebo GUI enabled by default (no `-s` in `gz_args`).
