@@ -48,10 +48,6 @@ class SquareTestNode(Node):
         self.declare_parameter("num_sides", 4)
         self.declare_parameter("pause_sec", 1.0)
         self.declare_parameter("control_rate_hz", 20.0)
-        # Positive turn_angle_deg means a right turn, which normally uses negative
-        # angular.z. Some SIM drive configurations invert the commanded yaw response;
-        # set this to 1.0 for those tests without changing the desired yaw sign.
-        self.declare_parameter("right_turn_angular_sign", -1.0)
 
         odom_topic = self.get_parameter("odom_topic").get_parameter_value().string_value
         cmd_vel_topic = self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
@@ -64,11 +60,6 @@ class SquareTestNode(Node):
         self.num_sides = int(self.get_parameter("num_sides").value)
         self.pause_sec = float(self.get_parameter("pause_sec").value)
         control_rate_hz = float(self.get_parameter("control_rate_hz").value)
-        self.right_turn_angular_sign = float(self.get_parameter("right_turn_angular_sign").value)
-        if self.right_turn_angular_sign >= 0.0:
-            self.right_turn_angular_sign = 1.0
-        else:
-            self.right_turn_angular_sign = -1.0
 
         self.current_x: Optional[float] = None
         self.current_y: Optional[float] = None
@@ -82,8 +73,6 @@ class SquareTestNode(Node):
         self.phase_start_y: Optional[float] = None
         self.phase_start_yaw: Optional[float] = None
         self.target_drive_yaw: Optional[float] = None
-        self.previous_turn_yaw: Optional[float] = None
-        self.accumulated_turn_yaw = 0.0
         self.pause_deadline = None
         self.completed_sides = 0
         self.phase = Phase.WAITING_FOR_ODOM
@@ -142,8 +131,6 @@ class SquareTestNode(Node):
     def begin_turn(self) -> None:
         self.phase = Phase.TURN
         self.phase_start_yaw = self.current_yaw
-        self.previous_turn_yaw = self.current_yaw
-        self.accumulated_turn_yaw = 0.0
         turn_direction = "right" if self.turn_angle >= 0.0 else "left"
         self.get_logger().info(
             f"Starting {turn_direction} turn {self.completed_sides + 1}/{self.num_sides} from "
@@ -206,28 +193,24 @@ class SquareTestNode(Node):
             return
 
         if self.phase == Phase.TURN:
-            yaw_step = wrap_angle(self.current_yaw - self.previous_turn_yaw)
-            self.previous_turn_yaw = self.current_yaw
-            self.accumulated_turn_yaw += yaw_step
+            yaw_delta = wrap_angle(self.current_yaw - self.phase_start_yaw)
             target_turn = abs(self.turn_angle)
             turn_complete = (
-                self.accumulated_turn_yaw <= -target_turn
-                if self.turn_angle >= 0.0
-                else self.accumulated_turn_yaw >= target_turn
+                yaw_delta <= -target_turn if self.turn_angle >= 0.0 else yaw_delta >= target_turn
             )
             if turn_complete:
                 self.completed_sides += 1
                 self.get_logger().info(
                     f"Completed turn {self.completed_sides}/{self.num_sides}: "
-                    f"yaw_delta={math.degrees(self.accumulated_turn_yaw):.1f} deg"
+                    f"yaw_delta={math.degrees(yaw_delta):.1f} deg"
                 )
                 if self.completed_sides >= self.num_sides:
                     self.finish_test()
                 else:
                     self.begin_pause(Phase.DRIVE)
                 return
-            angular_sign = self.right_turn_angular_sign if self.turn_angle >= 0.0 else -self.right_turn_angular_sign
-            self.publish_drive(angular_z=angular_sign * self.angular_speed)
+            angular_z = -self.angular_speed if self.turn_angle >= 0.0 else self.angular_speed
+            self.publish_drive(angular_z=angular_z)
             return
 
         if self.phase == Phase.COMPLETE:
@@ -242,14 +225,9 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            if rclpy.ok():
-                node.publish_stop()
-        except Exception:
-            pass
+        node.publish_stop()
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

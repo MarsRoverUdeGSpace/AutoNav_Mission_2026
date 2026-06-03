@@ -7,14 +7,20 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 install(
-    DIRECTORY launch config world
+    DIRECTORY launch config world models
     DESTINATION share/${PROJECT_NAME}/
 )
 install(PROGRAMS
+    scripts/encoder_odom.py
+    scripts/gnss_waypoint_common.py
+    scripts/gnss_waypoint_controller.py
+    scripts/imu_sanitize_relay.py
     scripts/scan_frame_relay.py
     scripts/scan_merge.py
-    scripts/sim_covariance_relay.py
     scripts/square_test.py
+    scripts/vslam_odom_relay.py
+    scripts/yolo_detector.py
+    scripts/zed_bgra_to_rgb.py
     DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()

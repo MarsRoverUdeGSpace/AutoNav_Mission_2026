@@ -11,6 +11,28 @@ Development is done simulation-first (Gazebo/Ignition) and then transferred to t
 
 ---
 
+## Stable release state
+
+As of June 2, 2026, this repository has a stable AutoNav release based on the validated `humble-jetson` hardware branch and promoted through `develop`/`main`.
+
+Validated release highlights:
+
+- GNSS waypoint navigation works successfully on the rover hardware path.
+- Direct GNSS waypoint control supports ordered waypoint queues.
+- Waypoint acceptance is hardened with a `1.5 m` fallback radius for the validated field workflow.
+- Motion-based yaw auto-calibration is integrated for runs where the initial heading must be derived from rover movement.
+- The validated minimal odometry baseline is integrated with the Core System firmware contract.
+- The Jetson Humble launch path keeps wheel odometry and BNO055 IMU fusion as the local odom baseline, with ZED VSLAM and perception features kept optional.
+- ZED/ArUco/YOLO hardware perception hooks are available for later mission-layer use without replacing the GNSS waypoint baseline.
+
+Branch provenance:
+
+- `humble-jetson` carried the hardware validation work and remains the historical source branch for this release.
+- `develop` is the stable integration branch after the release squash.
+- `main` is the tagged stable release branch.
+
+---
+
 ```mermaid
 %% ROS 2 topic Map con relaciones UML
 classDiagram
@@ -38,6 +60,9 @@ class Slam {
 class Nav {
   Nav2 Planner/Controller
 }
+class GnssWp {
+  GNSS Waypoint Controller
+}
 class Ops {
   Consola/GUI
 }
@@ -58,6 +83,7 @@ Jetson o-- Lidar
 Jetson o-- Cam
 Jetson o-- Slam
 Jetson o-- Nav
+Jetson o-- GnssWp
 Jetson o-- Ops
 
 MCU o-- Pub1
@@ -74,6 +100,9 @@ MCU o-- Sub2
 Lidar --> Nav : Datos sensores
 Cam --> Slam   : Imagenes
 Slam --> Nav   : Localización
+Pub2 --> GnssWp: GNSS fix
+Pub5 --> GnssWp: Odom baseline
+GnssWp --> Sub1: /cmd_vel
 Ops <--> Pub7  : /diagnostics/
 Nav --> Sub1   : /cmd_vel
 Ops --> Sub2   : /mission/abort

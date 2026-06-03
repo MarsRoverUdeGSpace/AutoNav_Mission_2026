@@ -1,477 +1,4 @@
 ---
-
-## 8. Current HW Baseline Command (2026-02-27)
-
-Use this command as the minimal Jetson hardware baseline for reliability testing with `tools/nav2_reliability_trials.sh`:
-
-```bash
-ros2 launch maya_bringup maya.launch.xml \
-  sim:=false rviz:=false \
-  use_zed:=true zed_camera_model:=zed2i zed_enable_ipc:=false \
-  odom_topic:=/zed/zed_node/odom \
-  imu_topic:=/imu/data \
-  use_ld19:=true lidar_port:=/dev/ttyUSB1 \
-  use_depth_scan:=false \
-  use_aruco:=false \
-  use_yolo:=false
-```
-
-Intent:
-- keep ArUco/YOLO disabled during core localization/navigation reliability runs,
-- isolate LD19 + ZED odom/IMU + EKF + SLAM/Nav2 behavior.
-
-## 8. Postmortem – Failed SIM Attempt (2026-02-18)
-
-This section records a failed tuning cycle so future work does not repeat it.
-
-### 8.1 What failed repeatedly
-
-- Validation showed `NavigateToPose` occasionally succeeded while rover did not meaningfully move.
-- Global map stayed extremely small (`/map_metadata` often `5x5` or `6x6` at `0.03 m` resolution).
-- Global costmap remained tiny and mostly occupied/unknown; planner frequently logged:
-  - `Robot is out of bounds of the costmap`
-  - `Sensor origin ... out of map bounds`
-- Local costmap published, but often did not populate obstacles as expected.
-- Startup ordering issue observed: local costmap activation retried while `odom` frame was not yet available.
-- Intermittent actuation checks occurred during bringup windows, causing false negatives.
-
-### 8.2 Key observed signals that matter
-
-- `/cmd_vel` bridging to Gazebo existed and sometimes moved the rover; drive chain was not fully dead.
-- Scan quality looked deceptively “good” in finite-ratio terms, but raw values were pathological:
-  - ranges clustered at lidar minimum range (`~0.08 m`) with near-hit ratio near `1.0`.
-- This pattern indicates self-occlusion / self-hit or invalid sensor geometry context, not a Nav2 planner bug.
-- `voxel_grid` limitation hit when `z_voxels` was set above supported value (`16` max in this setup).
-
-### 8.3 Changes that created additional risk (do not repeat blindly)
-
-- Mixing large SLAM/Nav2 parameter sweeps before confirming raw sensor realism.
-- Switching multiple subsystems at once (SLAM mode + costmaps + validator + sensor placement), making attribution hard.
-- Tuning around symptoms (`xy_goal_tolerance`, medium-goal step, costmap thresholds) while map source remained invalid.
-- Over-relying on merged scan for SLAM before validating that primary lidar scan itself is sane.
-
-### 8.4 Root-cause hypothesis to prioritize first
-
-- Primary blocker is sensor/environment geometry for lidar in simulation (self-hit / immediate clipping), causing tiny map growth.
-- Secondary effects (costmap bounds warnings, goal “success without movement”, tiny global map) cascade from that.
-
-### 8.5 Required workflow for next iteration
-
-1. Validate raw sensor truth first (before Nav2 tuning):
-   - `/scan` must show a realistic spread of ranges, not fixed min-range values.
-2. Only after sensor truth is confirmed:
-   - validate SLAM map growth (`/map_metadata` spans increase with teleop),
-   - then validate Nav2 action behavior and costmaps.
-3. Change one subsystem at a time:
-   - sensor geometry/collision,
-   - SLAM params,
-   - costmap params,
-   - controller params.
-4. Keep deterministic checkpoints after each change:
-   - TF chain exists (`map->odom`, `odom->base_footprint`),
-   - map span > minimum target,
-   - global costmap dimensions track map growth,
-   - action trials require measurable movement.
-
-### 8.6 Guardrails for future tuning
-
-- Do not treat `Goal SUCCEEDED` as evidence of valid navigation without displacement checks.
-- Do not increase `z_voxels` beyond supported implementation limits in this stack.
-- Do not optimize planner/controller until SLAM map span is operationally large.
-- Prefer lidar-first SLAM debugging path; introduce depth-based layers only after baseline is stable.
-
-### 8.7 Resolved milestone (2026-02-20)
-
-- Root cause of "lidar sees only a circle at min range" was rendering backend mismatch with GPU lidar in simulation.
-- Effective fix: run Gazebo with `ogre2` render engine in launch defaults.
-  - `src/maya_bringup/launch/maya.launch.xml` now defaults both `render_engine` and `render_engine_gui` to `ogre2`.
-- After this fix:
-  - `/scan` publishes realistic data (not fixed at range_min).
-  - 2D SLAM with lidar-only input works and map quality is operationally valid in SIM.
-- Temporary fallback path (`/scan_depth`) remains a useful contingency, but primary mapping path should now use `/scan`.
-
-### 8.8 Nav2 Planner Timeout Note (error_code 207)
-
-- `NavigateToPose` failure with `ABORTED` + `error_code: 207` maps to `ComputePathToPose TIMEOUT` in Nav2.
-- This indicates a planner / global-costmap feasibility issue (or transform availability at planning time), not a raw sensor timestamp failure.
-- This issue has occurred intermittently during startup and was previously resolved in at least one run, but the exact successful parameter set was not persisted.
-- Required practice:
-  - when a run resolves `207`, immediately save the exact `nav2_params.yaml` diff and launch args in this file (or a dated note in `Docs/`),
-  - do not continue tuning without checkpointing the known-good values.
-
-### 8.9 Health-check script expectations
-
-- `tools/nav2_health_check.sh` is intended for strict SIM diagnostics.
-- If `map -> base_footprint` is temporarily unavailable during startup, the script may fall back to `odom -> base_footprint` for goal generation to keep diagnostics running.
-- A fallback frame goal should be treated as a startup-transient indicator, not a final autonomy acceptance result.
-
-### 8.10 Confirmed Nav2 split diagnosis (2026-02-21)
-
-- `ComputePathToPose` can succeed (`error_code: 0`, status `SUCCEEDED`) while `NavigateToPose` still fails.
-- Observed failure mode:
-  - `NavigateToPose` status `ABORTED` with `error_code: 107` (controller/follow-path timeout behavior).
-  - Feedback shows pose nearly constant and `distance_remaining` not decreasing, indicating command execution blockage or no effective motion.
-- Startup transient to account for:
-  - `/map_metadata` may initially report `width: 0`, `height: 0`.
-  - After short manual motion, SLAM map expands (non-zero dimensions) and planner checks become meaningful.
-- Operational testing rule:
-  1. Warm up SLAM map (short manual drive) until map dimensions are non-zero.
-  2. Run `/compute_path_to_pose` first to validate planner.
-  3. Run `/navigate_to_pose` second to validate controller execution.
-  4. Record both action statuses and `error_code` values in diagnostics.
-
-### 8.11 Nav2 BT Documentation Implication (NavigateToPose)
-
-- Official Nav2 `NavigateToPose` BT node documentation confirms it is a Behavior Tree action wrapper over the `bt_navigator` action server.
-- The BT node exposes `error_code_id` and `error_msg` outputs and supports custom behavior tree selection (`behavior_tree` input).
-- Practical implication for current debugging:
-  - custom BT integration may improve observability and recovery logic,
-  - but it will not fix the current controller execution failure by itself.
-- Current blocker is downstream of planning (controller / velocity pipeline / motion suppression), not the BT wrapper interface.
-
-### 8.12 Current SIM Autonomy Status (2026-02-21)
-
-- Confirmed working:
-  - LiDAR `/scan` in SIM is valid after `ogre2` render engine fix.
-  - SLAM (`slam_toolbox`) produces a valid map after short warmup motion (`/map_metadata` transitions from `0x0` to non-zero).
-  - `ComputePathToPose` succeeds (`error_code: 0`) once map is initialized.
-- Confirmed failing:
-  - `NavigateToPose` aborts with `error_code: 107` after planner succeeds.
-  - Feedback shows `current_pose` nearly constant and `distance_remaining` not decreasing.
-- Interpretation:
-  - Minimal baseline autonomous stack is close, but not yet complete.
-  - Remaining blocker is controller execution path (FollowPath / velocity pipeline), not LiDAR, SLAM map generation, or global planning.
-
-### 8.13 Next Minimal Logical Step (must do before wider integrations)
-
-1. Validate Nav2 command chain during active `NavigateToPose`:
-   - `/cmd_vel_nav`
-   - `/cmd_vel_smoothed`
-   - `/cmd_vel`
-2. Check for motion suppression / safety gating:
-   - `/collision_monitor_state`
-3. Confirm bridge subscription and command delivery to Gazebo during nav:
-   - `/cmd_vel` publisher/subscriber endpoints
-4. Run one controlled unblock test with minimal config changes:
-   - reduce progress checker strictness (`required_movement_radius`, `movement_time_allowance`)
-   - optionally disable/bypass collision monitor temporarily for diagnosis only
-5. Re-test `NavigateToPose` and record:
-   - final status
-   - `error_code`
-   - whether pose changes and `distance_remaining` decreases
-
-### 8.14 Integration Priority Rule (current phase)
-
-- Defer non-essential integrations (custom BT trees, new sensors, GNSS, 3D mapping additions) until `NavigateToPose` can physically move the rover in SIM under Nav2.
-- Acceptable integrations now are only those that directly improve:
-  - controller-path observability,
-  - diagnostics automation,
-  - motion gating isolation,
-  - EKF/odom validation.
-
-### 8.15 Condensed SIM Nav2 Checkpoint (2026-02-23)
-
-- Diagnostic conclusions (from command-chain + A/B tests):
-  - `ComputePathToPose` and the Nav2 velocity pipeline are healthy (`/cmd_vel_nav -> /cmd_vel_smoothed -> /cmd_vel` confirmed).
-  - Frequent `NavigateToPose` `error_code: 107` was primarily an effective-progress issue (not planner failure, not dead `/cmd_vel`).
-  - Collision monitor was not a simple hard-stop, but it reduced progress in tighter maps/space-constrained scenarios.
-  - Disabling collision monitor improved progress but was unsafe (rover could continue into collisions).
-- Current validated configuration (SIM):
-  - `slam_toolbox` uses lidar only: `scan_topic: /scan`
-  - Nav2 costmaps set to lidar-only observations (`observation_sources: scan` in local/global costmaps; depth pointcloud blocks left defined but unused)
-  - relaxed progress checker: `required_movement_radius: 0.05`, `movement_time_allowance: 30.0`
-  - increased forward speed caps: `FollowPath.vx_max: 1.0`, `velocity_smoother.max_velocity[0]: 1.0`
-  - collision monitor enabled: `collision_monitor.FootprintApproach.enabled: True`
-  - random world heightmap scaled to `40m x 40m`
-- Reliability milestone:
-  - `tools/nav2_reliability_trials.sh` added for headless multi-trial validation (warmup forward drive + return-to-reference test).
-  - On current 40x40 random world, automated headless protocol achieved:
-    - `5 / 5` trials `SUCCEEDED`
-    - all `error_code: 0`
-    - mean end-goal error (map frame) ≈ `0.073 m`
-    - median end-goal error (map frame) ≈ `0.030 m`
-    - mean trial duration (sim clock) ≈ `104.8 s`
-- Interpretation and remaining work:
-  - End-to-end Nav2 in SIM is now repeatably functional under the current parameter set.
-  - Next phase is tuning robustness and localization drift (EKF/IMU/SLAM), not basic command-chain viability.
-  - Compare `map` vs Gazebo displacement by magnitude only (different frames); timestamp age metrics from separate CLI samples may show skew.
-
-### 8.16 Frozen SIM Baseline for 25-Trial Regression (2026-02-23)
-
-- Freeze this configuration before any further tuning or GNSS integration work:
-  - Gazebo render engine defaults: `ogre2` (`render_engine`, `render_engine_gui`) in `maya.launch.xml`
-  - SIM world: `random_world.sdf` with `random_world/model.sdf` heightmap scale `40m x 40m`
-  - SIM spawn default in `maya.launch.xml`: `spawn_x=4.5` (current baseline pose remains in larger free space)
-  - SLAM mapping path: `slam_toolbox` lidar-only with `scan_topic: /scan`
-  - Nav2 costmaps: lidar-only active observations (`observation_sources: scan`), depth pointcloud blocks defined but inactive
-  - Controller progress checker (relaxed):
-    - `required_movement_radius: 0.05`
-    - `movement_time_allowance: 30.0`
-  - Forward speed caps (increased):
-    - `controller_server.FollowPath.vx_max: 1.0`
-    - `velocity_smoother.max_velocity[0]: 1.0`
-  - Collision monitor enabled:
-    - `collision_monitor.FootprintApproach.enabled: True`
-- Frozen regression reference result (headless reliability script, current baseline):
-  - `tools/nav2_reliability_trials.sh` return-to-reference protocol after warmup forward drive (~10m)
-  - `5 / 5` trials `SUCCEEDED`
-  - all `error_code: 0`
-  - mean end-goal error (map frame) ≈ `0.073 m`
-  - median end-goal error (map frame) ≈ `0.030 m`
-  - mean trial duration (sim clock) ≈ `104.8 s`
-- Rule for next tuning cycle:
-  - Run larger-sample regression first (e.g., 25 trials) with this exact baseline before changing Nav2/SLAM/EKF parameters.
-  - If a run improves outcomes, immediately checkpoint exact param diffs and launch args before additional changes.
-
-### 8.17 SIM Reliability Regression Follow-up (20 trials across 4x5 batches, 2026-02-24)
-
-- Baseline repeated over 20 total headless trials (multiple 5-trial runs due operator interruptions/startup retries):
-  - `18 / 20` `SUCCEEDED` (`90%`)
-  - `2 / 20` `TIMEOUT`
-  - successful trials continue to report `error_code: 0`
-- Aggregate behavior (approx across the 20-trial sample):
-  - mean trial duration ≈ `109 s` (sim clock)
-  - mean end-goal error (map frame) ≈ `0.11 m`
-  - mean `|Gazebo-map displacement|` magnitude difference ≈ `0.55 m`
-- Diagnosis update:
-  - End-to-end Nav2 remains broadly functional, but completion reliability is not yet fully locked.
-  - Timeouts often occur near the current goal acceptance boundary (several successful runs also finish near `xy_goal_tolerance`), so near-goal convergence / acceptance behavior is a likely contributor.
-  - Localization consistency (SLAM / odom / EKF) remains a separate tuning target due to persistent map-vs-Gazebo displacement magnitude gap/variance.
-- Next tuning priority (one variable at a time):
-  1. SLAM localization consistency first (active `slam_toolbox` params in `nav2_params.yaml`, confirm runtime values).
-  2. EKF / IMU yaw weighting only if SLAM-side changes do not materially improve consistency.
-  3. Costmap inflation shaping for path centering / smooth potentials after localization behavior is characterized.
-
-### 8.18 EKF IMU Yaw A/B (Yaw-Rate-Only) Under 180-Deg Heading Stress (2026-02-24)
-
-- Test setup change (diagnostic stress protocol):
-  - `tools/nav2_reliability_trials.sh` configured with post-warmup in-place turn:
-    - `POST_WARMUP_TURN_DEG=180`
-  - Goal pose remains the original spawn-reference pose/orientation, so return leg requires a large heading correction near goal.
-- EKF A/B change under test:
-  - `src/maya_bringup/config/ekf.yaml`
-  - IMU absolute yaw fusion disabled; IMU yaw-rate fusion kept enabled (`imu0_config` yaw=false, vyaw=true).
-- Result (10 trials):
-  - `2 / 10` `SUCCEEDED` (`20%`)
-  - `8 / 10` `ABORTED` (mostly `error_code: 208`)
-  - mean end-goal error became very large (multi-meter) due frequent early aborts / non-convergence
-  - several failed trials show low displacement and large remaining goal error after the post-warmup turn
-- Diagnosis:
-  - In this SIM stress scenario, yaw-rate-only IMU fusion is a major regression versus the prior baseline.
-  - Removing absolute IMU yaw significantly degrades heading convergence / consistency after the forced heading reversal.
-- Action:
-  - Revert this EKF A/B change before continuing SLAM/inflation tuning.
-  - If further EKF testing is needed, test `imu0_relative` or covariance changes separately while keeping absolute IMU yaw fused.
-
-### 8.19 IMU Frame-ID Root Cause Fix and EKF Behavior Update (2026-02-24)
-
-- Confirmed IMU integration bug in SIM:
-  - `/imu.header.frame_id` was published as a scoped Gazebo sensor name (`maya/base_footprint/imu_sensor`) that did **not** exist in the ROS TF tree.
-  - TF tree itself was structurally correct (`base_footprint -> base_link`, `base_link -> imu_link`, `base_link -> lidar_link`).
-- Effective fix:
-  - set Gazebo IMU sensor `gz_frame_id` explicitly to `imu_link` in `src/maya_description/urdf/sensors_gazebo.xacro`.
-- After the fix:
-  - `/imu.header.frame_id` now correctly reports `imu_link`.
-  - Manual driving/turning showed noticeably improved pose/orientation consistency in RViz and better return-to-near-start behavior.
-- EKF A/B result recorded:
-  - `imu0_relative: true -> false` (with IMU frame fix in place) made heading behavior worse.
-  - Keep `imu0_relative: true` in current SIM baseline.
-- Remaining EKF/IMU concern (next tuning target):
-  - `/imu.orientation_covariance` is still all zeros in SIM, which can cause EKF yaw over-trust.
-  - `/odom` covariances from Gazebo DiffDrive are also zeros; EKF source weighting remains unrealistic.
-
-### 8.20 Clean SIM Baseline Defaults (Lidar SLAM + EKF odom, no depth/VIO) (2026-02-24)
-
-- Launch defaults were updated to restore a cleaner isolation baseline for localization tuning:
-  - `use_depth_scan_pipeline:=false` by default in `src/maya_bringup/launch/maya.launch.xml`
-  - `use_vio_odom:=false` (default)
-  - `use_rtabmap_odom:=false` (default)
-- Current default SIM runtime intent:
-  - EKF local odom = `/odom` + `/imu`
-  - `slam_toolbox` = lidar scan (`/scan`) + EKF odom prior
-  - Nav2 unchanged
-  - No depth-to-scan conversion / merged scan path by default
-  - No RTAB-Map odometry by default
-- Terminology note:
-  - This is a **loose-coupled EKF odom + lidar SLAM** baseline, not tight LIO.
-
-### 8.21 Optional VIO/RTAB-Map Integration Scaffold (Not Baseline) (2026-02-24)
-
-- Prototype optional EKF visual odometry overlay was drafted locally (for `odom1=/visual_odom` planar fusion), but it is **not part of this develop checkpoint**.
-  - Rationale: `/visual_odom` was not yet valid in SIM (`lost`, invalid quaternion / `9999` covariance), so the overlay file is intentionally left out until the source is proven.
-- Added launch toggles in `src/maya_bringup/launch/maya.launch.xml`:
-  - `use_vio_odom` (loads EKF overlay when true)
-  - `use_rtabmap_odom` (launches optional `rtabmap_odom/rgbd_odometry` when true)
-- RTAB-Map odom node is currently configured to:
-  - remap odometry output to `/visual_odom`
-  - `publish_tf:=false` (avoid TF ownership conflict with EKF/SLAM)
-  - use RGB + depth camera topics from current Gazebo sensors
-- Current observed RTAB-Map state in SIM (with optional path enabled):
-  - `/visual_odom` publishes with compatible frame IDs (`odom` -> `base_footprint`)
-  - but odometry was `lost` (`/odom_info.lost: true`), with `inliers: 0`, invalid quaternion (`w=0`) and `9999` covariance (not suitable for EKF fusion yet)
-  - `rgbd_odometry` in the installed version did not subscribe to `/imu` under the attempted `subscribe_imu` parameter (parameter mismatch/version difference)
-- Rule:
-  - Do not enable `use_vio_odom:=true` in regression runs until `/visual_odom` is demonstrably valid (non-zero quaternion, non-9999 covariance, stable tracking).
-  - If the EKF overlay file is not present in the current branch checkpoint, keep `use_vio_odom:=false`.
-
-### 8.22 Reliability Script Enhancement – Dual-Phase Turn Stress Mode (2026-02-24)
-
-- `tools/nav2_reliability_trials.sh` now supports an optional two-phase per-trial mode to compare easy vs turn-stress behavior under the same startup/map conditions.
-- New env vars:
-  - `DUAL_PHASE_TURN_STRESS_TEST` (default `false`)
-  - `PHASE_A_POST_WARMUP_TURN_DEG` (default `0`)
-  - `PHASE_B_POST_WARMUP_TURN_DEG` (default `90`)
-- Behavior when enabled:
-  1. `phase_a`:
-     - warmup forward drive (~10m)
-     - return-to-reference NavigateToPose
-  2. `phase_b`:
-     - second warmup forward drive (~10m)
-     - post-warmup in-place turn (default `90°`)
-     - return-to-reference NavigateToPose
-- Summary improvements:
-  - per-phase metrics are recorded under `trial -> phases`
-  - aggregate metrics are split by phase (`aggregate.by_phase`)
-  - per-trial stress-minus-easy deltas are reported in `phase_comparison`
-- This mode is intended for quantitative turning diagnostics (TF drift / map-vs-Gazebo displacement / goal error deltas), while keeping legacy single-phase behavior available by default.
-
-### 8.23 Future-Proofing Rules (Carry Forward) (2026-02-24)
-
-- Treat **message `frame_id` values as first-class integration contracts**, not just TF tree existence.
-  - Validate `/imu`, `/scan`, `/odom`, and any future `/visual_odom` headers against TF frames before tuning algorithms.
-- For any new odometry source (VIO, GNSS fusion, encoder odom):
-  1. verify topic exists,
-  2. verify `header.frame_id` and `child_frame_id`,
-  3. verify covariance sanity (non-zero, realistic),
-  4. only then fuse into EKF/Nav2.
-- Keep optional integrations disabled by default until they produce valid data:
-  - RTAB-Map/VIO, depth scan pipeline, future GNSS overlays.
-- Prefer paired/within-trial diagnostics (easy vs stress) when analyzing turning regressions to reduce startup/transient confounds.
-
-### 8.24 Manual SIM Turning Checkpoint (2026-03-08)
-
-- Standard SIM + autonomy entrypoint remains:
-  - `ros2 launch maya_bringup maya.launch.xml`
-- Manual operator validation after rebuilding and launching this baseline showed:
-  - simulation real-time factor improved materially (operator observed roughly `30% -> 70%`),
-  - manual driving and turning are noticeably cleaner than the prior baseline,
-  - but in-place / tighter turns still cause SLAM drift and partial map overlap.
-- Current interpretation:
-  - the recent `slam_toolbox` parameter expansion improved scan-matching behavior,
-  - however the remaining failure is **not** solved by adding more generic odometry sources alone,
-  - the likely remaining issue is local yaw / turn prior quality in `wheel odom + IMU + EKF`, especially covariance realism and relative weighting during rotation.
-- Current architecture reminder:
-  - with the present 2D lidar baseline (`/scan`), the active stack is still `wheel-like odom + IMU -> EKF -> slam_toolbox/Nav2`,
-  - this is **not** true LIO,
-  - for the current rover baseline, prioritize a robust 2D stack before adding any optional LIO path.
-- Required next debugging order:
-  1. verify `/odom`, `/imu`, and `/odometry/filtered` covariance fields are non-zero and realistic,
-  2. validate turn behavior of `odom -> base_footprint` independently of SLAM,
-  3. only after odom/yaw quality is characterized, continue additional SLAM tuning.
-
-### 8.25 Turn Drift Diagnostic Result (2026-03-08)
-
-- Added focused turn diagnostic tool:
-  - `bash tools/turn_drift_diagnostic.sh`
-- Current scripted 180-degree turn result established a stronger root-cause signal than the reliability harness alone:
-  - Gazebo truth rotation reached only about `57 deg` before timeout,
-  - `/odom` final relative yaw was about `-10.8 deg`,
-  - `/odometry/filtered` final relative yaw was about `36.7 deg`,
-  - `/imu` final relative yaw was about `19.6 deg`,
-  - mean absolute yaw error vs Gazebo remained very large:
-    - `/odom` about `95 deg`
-    - `/odometry/filtered` about `51 deg`
-    - `/imu` about `49 deg`
-- Covariance diagnosis from the same run:
-  - `/odom.pose.covariance[yaw] = 0`
-  - `/imu.orientation_covariance[yaw] = 0`
-  - `/odometry/filtered.pose.covariance[yaw]` remained unrealistically tiny (`~5e-10`)
-- Interpretation:
-  - remaining turn drift is confirmed to be primarily a **local odom / IMU / EKF yaw quality problem**, not just a `slam_toolbox` tuning problem,
-  - zero or near-zero source covariance means EKF is overconfident during rotation,
-  - if Gazebo truth turn itself is limited while odom yaw diverges badly, check simulated drive kinematics before further SLAM tuning.
-- Immediate corrective action taken:
-  - corrected Gazebo DiffDrive left/right joint grouping in `src/maya_description/urdf/mobile_base_gazebo.xacro`
-  - previous plugin wiring had left/right sides swapped, which is a plausible source of corrupted turning odometry in SIM
-- Updated debugging priority after this checkpoint:
-  1. re-run `tools/turn_drift_diagnostic.sh` after the DiffDrive fix,
-  2. if yaw error drops materially, continue with covariance realism fixes,
-  3. only after local yaw behavior is sane should further `slam_toolbox` tuning resume.
-
-### 8.26 Turn Drift Baseline Isolation Outcome (2026-03-12)
-
-- The turn-drift investigation added two new SIM-side baseline tools:
-  - `src/maya_bringup/scripts/sim_covariance_relay.py`
-  - `tools/turn_drift_diagnostic.sh`
-- The current SIM launch path now routes EKF through relayed topics with non-zero covariances:
-  - `/odom_with_covariance`
-  - `/imu_with_covariance`
-- EKF local fusion was adjusted so raw wheel odom no longer contributes absolute yaw pose directly; IMU still contributes heading and yaw rate.
-- Sim model changes retained in the current baseline:
-  - DiffDrive left/right joint grouping corrected in `src/maya_description/urdf/mobile_base_gazebo.xacro`
-  - wheel contact collision changed from STL meshes to cylinders in `src/maya_description/urdf/mobile_base.xacro`
-  - explicit wheel friction/slip parameters added in `src/maya_description/urdf/mobile_base_gazebo.xacro`
-  - wheel-axis normalization experiment was rejected and reverted; right-wheel mirrored axis remains required in the current model
-- Diagnostic conclusion:
-  - on `empty.sdf`, fused `/odometry_filtered` became materially better and can track Gazebo truth closely enough to treat the flat-world local odom baseline as improved
-  - on `random_world.sdf`, pure in-place turning remains unstable and terrain/contact dominated; rough-terrain turn drift is **not** solved by the current baseline
-- Operational interpretation:
-  - the current baseline is good enough to checkpoint improvements in diagnostics, covariance realism, and flat-world turn estimation
-  - but random heightmap turning should still be treated as a stress case, not as a resolved capability
-- Recommended validation split going forward:
-  1. use `empty.sdf` for local odom / EKF turn-isolation tests
-  2. use `random_world.sdf` for realistic turn-stress and return-to-reference tests
-  3. use `tools/nav2_reliability_trials.sh` for acceptance metrics, not pure-turn-only diagnostics on rough terrain
-
-### 8.27 Manual Nav2 Spin Checkpoint (2026-04-14)
-
-- Manual testing confirmed that Nav2 `Spin` is the correct behavior to isolate yaw-turn execution.
-  - Do **not** use `NavigateToPose` as the primary test for a pure in-place 180-degree turn.
-  - `NavigateToPose` adds planner / BT / goal-feasibility failure paths that obscure yaw-specific diagnosis.
-- Current validated manual test command:
-
-```bash
-ros2 action send_goal /spin nav2_msgs/action/Spin "{
-  target_yaw: 3.1415927,
-  time_allowance: {sec: 60, nanosec: 0}
-}" --feedback
-```
-
-- What the manual `Spin` tests showed consistently:
-  - action status often returns `SUCCEEDED` with `error_code: 0`,
-  - `angular_distance_traveled` feedback reaches about `-3.16 rad` (roughly `181 deg`),
-  - but the final settled heading from:
-    - `/odometry/filtered`,
-    - `tf odom -> base_footprint`,
-    - `tf map -> base_footprint`,
-    - `/imu_with_covariance`
-    all agree on a final yaw around `163 deg` to `165 deg` for a commanded `180 deg` spin.
-- Important interpretation:
-  - the localization stack is internally consistent after the maneuver,
-  - there is **not** currently evidence of a post-spin settling drift between EKF / TF / IMU,
-  - the remaining mismatch is between Nav2 `Spin`'s reported traveled angle and the final estimated heading.
-- Operational workaround established from manual tests:
-  - commanding about `165 deg` (`180 deg - 15 deg`) produced the closest observed final heading to a true/visual `180 deg` turn.
-  - Treat this as an **empirical SIM workaround**, not as confirmed ground truth.
-- What this does **not** prove yet:
-  - it does **not** yet prove whether the rover physically under-rotates or whether the final yaw estimate is biased during the maneuver,
-  - because full Gazebo truth orientation for the same post-spin sample has not yet been captured and compared.
-- Required next diagnostic to close the loop:
-  1. run one clean `Spin` test,
-  2. immediately capture:
-     - `/odometry/filtered`,
-     - `/imu_with_covariance`,
-     - `tf odom -> base_footprint`,
-     - full Gazebo dynamic pose block for `maya` including orientation quaternion,
-  3. compare final estimated yaw against Gazebo truth yaw.
-- Practical rule going forward:
-  - for Nav2 yaw-behavior testing, use `Spin`,
-  - for low-level drivetrain / odom isolation, raw `/cmd_vel` turn tests remain useful,
-  - do not mix those two conclusions in one metric.
-- Script status note:
-  - `tools/nav2_reliability_trials.sh` was partially adapted to use `Spin` in the post-warmup turn stage,
-  - but this should be treated as **experimental** until the manual `Spin` behavior is fully understood and the final-heading vs feedback mismatch is explained.
-
 # AGENTS – Autonomous Navigation Mission (Maya Rover)
 
 These instructions apply to the entire `AutoNav_Mission_2026` repository.
@@ -484,6 +11,22 @@ Your job is to:
 - Prefer clarity and robustness over “clever” one-liners.
 
 If these instructions ever conflict with explicit task instructions, the task instructions win.
+
+---
+
+## 0. Stable release status (2026-06-02)
+
+The stable AutoNav release is based on the validated `humble-jetson` hardware line and is promoted through `develop` and `main`.
+
+Current stable facts:
+
+- GNSS waypoint navigation worked successfully on the rover hardware path.
+- Direct GNSS waypoint control, ordered waypoint queues, 1.5 m fallback waypoint acceptance, and motion-based yaw auto-calibration are integrated.
+- The validated local odom baseline uses the Core System firmware contract: `/odom`, BNO055 IMU/magnetometer, GNSS, and `cmd_vel`.
+- Wheel odom + BNO055 remains the default local odometry baseline; ZED VSLAM, ArUco, YOLO, and LD19 hardware paths are optional add-ons unless field testing proves they should be part of the default stack.
+- `humble-jetson` is the historical source branch for this release, `develop` is the integration branch, and `main` is for tagged stable releases.
+
+Older status sections below are retained as project history and should not override the stable release facts above.
 
 ---
 
@@ -865,7 +408,6 @@ If a task only touches documentation (Markdown), you do not need to run code, bu
 * A stable Nav2 bringup path with SLAM that reduces or eliminates map drift.
 * Clear, minimal configuration changes that improve localization consistency.
 * A repeatable refinement workflow that balances SIM-first tuning with short HW validation cycles.
-* Tight integration with Core System firmware for encoder-derived odometry as the next foundation milestone.
 
 **Refinement strategy (SIM vs HW)**
 
@@ -873,12 +415,6 @@ If a task only touches documentation (Markdown), you do not need to run code, bu
 2. Validate only high-value changes on Jetson hardware in short, controlled runs.
 3. Treat HW runs as acceptance tests for TF integrity, topic rates, and drift, not first-pass tuning.
 4. Keep branch diffs small and isolate changes by subsystem (IMU, odom, SLAM, costmaps).
-
-**Cross-repo collaboration rule (AutoNav + Core System)**
-
-1. Firmware (Core System repo) owns encoder acquisition, low-level odom integration, and diagnostic flags.
-2. AutoNav repo owns EKF/Nav2/SLAM topic contracts, fusion strategy, and launch wiring.
-3. Any topic/frame contract change must be documented in both repos before testing.
 
 **How to treat this in changes**
 
@@ -889,3 +425,565 @@ When a task mentions Nav2, SLAM, or IMU tuning:
 3. Preserve existing launch entry points unless explicitly asked to restructure.
 
 ---
+
+## 8. SIM Baseline Sync from `develop` (2026-02-24)
+
+This section mirrors the current known-good SIM findings from the `develop` branch so Jetson/HW work can track a stable reference.
+
+### 8.1 Confirmed working SIM baseline (2D SLAM + forward/back autonomous return)
+
+- 2D lidar SLAM (`slam_toolbox`, `scan_topic: /scan`) is operational in SIM after the Gazebo render backend fix (`ogre2`).
+- Nav2 can perform repeatable warmup-forward + return-to-reference runs in SIM (headless reliability script).
+- A validated baseline on `develop` achieved repeatable forward/back autonomous runs (5/5 in the initial checkpoint; later 20-trial follow-up remained broadly functional at 18/20).
+- Interpretation:
+  - End-to-end Nav2 in SIM works.
+  - Current tuning focus is localization consistency / turning behavior, not basic command-chain viability.
+
+### 8.2 IMU frame-id integration bug (critical lesson, fixed on `develop`)
+
+- Root cause found in SIM:
+  - `/imu.header.frame_id` was a Gazebo-scoped sensor name that did not exist in the ROS TF tree.
+- Effective fix on `develop`:
+  - explicitly set Gazebo IMU `gz_frame_id` to `imu_link` in `src/maya_description/urdf/sensors_gazebo.xacro`.
+- After the fix (observed on `develop`):
+  - `/imu.header.frame_id` became `imu_link`
+  - pose/orientation consistency during turning improved noticeably in RViz.
+- Carry-forward rule:
+  - validate message `frame_id` values (`/imu`, `/scan`, `/odom`, future `/visual_odom`) against TF before tuning filters/SLAM.
+
+### 8.3 EKF / IMU tuning result to preserve
+
+- `imu0_relative: true -> false` was tested in SIM after the IMU frame fix and made heading behavior worse.
+- Keep `imu0_relative: true` in the current baseline unless a new controlled A/B test shows otherwise.
+- Remaining known issue:
+  - SIM `/imu.orientation_covariance` and Gazebo `/odom` covariances may be unrealistically zero, which can distort EKF source weighting.
+
+### 8.4 Clean localization tuning baseline defaults (no depth/VIO)
+
+- `develop` was cleaned to a simpler baseline for localization tuning:
+  - depth scan pipeline disabled by default
+  - VIO/RTAB-Map odometry disabled by default
+- Runtime intent of that baseline:
+  - EKF local odom = `/odom` + `/imu`
+  - `slam_toolbox` = lidar scan (`/scan`) + EKF odom prior
+  - Nav2 unchanged
+- Terminology note:
+  - this is a loose-coupled EKF odom + lidar SLAM baseline, not tight LIO.
+
+### 8.5 Optional RTAB-Map / VIO experiments (not baseline)
+
+- `develop` has optional launch scaffolding for RTAB-Map RGB-D odometry and `/visual_odom` EKF fusion testing.
+- Current observed RTAB-Map odom state in SIM was not valid for fusion:
+  - odometry lost (`/odom_info.lost: true`)
+  - `inliers: 0`
+  - invalid quaternion / `9999` covariance in `/visual_odom`
+- Rule:
+  - do not enable VIO odom fusion in regression runs until `/visual_odom` is demonstrably valid and stable.
+
+### 8.6 Reliability diagnostics upgrade (paired turning stress test)
+
+- `tools/nav2_reliability_trials.sh` on `develop` now supports an optional dual-phase per-trial mode:
+  - `phase_a`: easy warmup + return
+  - `phase_b`: warmup + forced in-place turn (default 90 deg) + return
+- Purpose:
+  - quantify turning-induced degradation within the same startup/map conditions.
+- This is useful for future backports or equivalent diagnostics on `humble-jetson` after HW odom/IMU are stable.
+
+### 8.7 Future-proof integration rules (carry forward)
+
+- For any new odometry source (encoders, VIO, GNSS fusion):
+  1. verify topic exists
+  2. verify `header.frame_id` and `child_frame_id`
+  3. verify covariance sanity (non-zero, realistic)
+  4. only then fuse into EKF/Nav2
+- Keep optional integrations disabled by default until they produce valid data.
+- Prefer within-run paired diagnostics (easy vs stress) when analyzing turning regressions to reduce startup/transient confounds.
+
+### 8.8 Humble-Jetson HW Bringup Milestone (LD19 + ZED + SLAM + ArUco) (2026-02-26)
+
+- LD19 hardware LiDAR was installed and validated on Jetson (`/dev/ttyUSB1`) using `ldlidar_stl_ros2`.
+- Verified from PC over ROS 2 network:
+  - `/scan` publishes valid `LaserScan` data at ~`10 Hz`
+  - `frame_id` is currently `base_laser` (kept intentionally because vendor driver was stable in this mode)
+- `maya.launch.xml` on `humble-jetson` now supports optional LD19 HW bringup in `sim:=false` mode:
+  - `use_ld19:=true`
+  - `lidar_port:=/dev/ttyUSB1`
+  - guarded vendor-style static TF for `base_link -> base_laser`
+  - HW scan relay keeps `base_laser` by default to avoid mislabeling a working stream
+- Selective backport from `develop` applied to `humble-jetson`:
+  - lidar-only Nav2/SLAM baseline (`/scan` active source)
+  - relaxed progress checker
+  - higher forward speed caps
+  - collision monitor observing lidar scan topic
+  - `slam_toolbox` `max_laser_range` aligned to `12.0`
+- Integrated HW bringup confirmed working with:
+  - `LD19` (`/scan`)
+  - `ZED` odom + IMU (`/zed/zed_node/odom`, `/zed/zed_node/imu/data`)
+  - `slam_toolbox` mapping in HW mode
+  - ArUco detector integrated through `maya.launch.xml`
+- ArUco integration update:
+  - `maya.launch.xml` now exposes annotated output mode/topic parameters, including raw annotated image publishing for RViz debugging.
+  - Use `aruco_publish_annotated_raw:=true` to publish `/aruco/annotated_image/raw` (`sensor_msgs/Image`) when RViz rendering of compressed annotated stream is problematic.
+- RViz troubleshooting note (important):
+  - LaserScan displays for `/scan` and `/scan_fixed` may require `Best Effort` QoS in RViz.
+  - With current HW baseline, set RViz fixed frame to `base_laser` (or another TF-connected frame) while validating the raw lidar stream.
+
+### 8.9 Next Integration Priority – YOLO Object Detection (High-Level Plan) (2026-02-26)
+
+- Next logical step after the current HW milestone is integrating YOLO object detection as an **optional perception node** in `maya.launch.xml` on `humble-jetson`.
+- Current status:
+  - `.pt` model is already available on the Jetson side.
+  - Core sensing + localization stack is working (LD19 + ZED + SLAM + ArUco), so YOLO can be added without debugging basic bringup at the same time.
+- Integration intent (initial phase):
+  - Subscribe to **ZED compressed RGB image** topic (to match current working bandwidth/profile setup).
+  - Publish detections / annotated outputs for visualization and validation only.
+  - Keep YOLO decoupled from Nav2/SLAM/EKF (no autonomy behavior coupling yet).
+- Guardrails:
+  - Add YOLO as a launch-toggle subsystem (`use_yolo:=true/false`, default off).
+  - Do not modify costmaps / planners / BTs until detections are validated and topic contracts are stable.
+  - Treat message type/QoS compatibility (especially compressed image transport) as first-class validation checks before optimization.
+
+### 8.10 YOLO Integration Status (CPU-Only) and ArUco Isolation Rule (2026-02-27)
+
+- YOLO integration in `maya_bringup` is functional:
+  - subscribes to ZED compressed RGB input
+  - publishes detections and annotated outputs
+  - raw annotated image output is available for RViz (`/yolo/annotated_image/raw`)
+- Current runtime limitation on Jetson:
+  - CUDA-enabled PyTorch wheel source was not reachable from network/DNS, so current YOLO runtime is CPU-only.
+  - Use `yolo_device:=cpu` until Jetson CUDA wheel installation path is fixed.
+- Operational isolation rule:
+  - When validating ArUco behavior/regression, launch with `use_yolo:=false` to remove perception-resource contention and topic overlap confounds.
+  - Re-enable YOLO only after ArUco topic/output is confirmed healthy.
+
+### 8.11 Humble-Jetson Minimal Encoder Odom Validation Milestone (2026-04-16)
+
+- A new minimal hardware validation path was established on branch `humble-jetson-minimal-odom` to bring up only:
+  - `robot_state_publisher`
+  - wheel encoder odom (`encoder_odom.py`)
+  - `robot_localization` EKF
+- Purpose:
+  - validate the hardware odom + IMU + TF chain before re-enabling Nav2, LiDAR, ZED, or other autonomy subsystems.
+- Hardware topic contract used in this milestone:
+  - IMU: `/sensors/bno055/imu/data`
+  - left encoder ticks: `/sensors/roboclaw/encoders/left_m1/ticks`
+  - right encoder ticks: `/sensors/roboclaw/encoders/right_m1/ticks`
+  - optional diagnostic rates:
+    - `/sensors/roboclaw/encoders/left_m1/qpps`
+    - `/sensors/roboclaw/encoders/right_m1/qpps`
+- Current wheel geometry assumptions for this path:
+  - wheel separation: `1.0 m`
+  - wheel radius: `0.1636 m`
+  - encoder ticks per revolution: `7400` (validated hardware setting; do not revert to the older `2048` assumption).
+
+Validated launch command (Jetson, Humble, minimal odom test):
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false rviz:=false \
+  use_nav2:=false \
+  use_zed:=false \
+  use_ld19:=false \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false \
+  use_ekf:=true \
+  use_encoder_odom:=true \
+  odom_topic:=/odom \
+  imu_topic:=/sensors/bno055/imu/data \
+  left_encoder_ticks_topic:=/sensors/roboclaw/encoders/left_m1/ticks \
+  right_encoder_ticks_topic:=/sensors/roboclaw/encoders/right_m1/ticks \
+  encoder_msg_type:=std_msgs/msg/Int32 \
+  encoder_ticks_per_rev:=7400 \
+  encoder_wheel_radius:=0.1636 \
+  encoder_wheel_separation:=1.0 \
+  encoder_publish_tf:=false
+```
+
+Code/launch lessons captured in this milestone:
+- `maya.launch.xml` on Humble cannot use the XML frontend expression:
+  - `$(eval 'not ' + var('sim'))`
+- For Humble XML compatibility, `use_encoder_odom` must remain a plain boolean arg and be passed explicitly in HW launches.
+- Raw PCB encoder publishers were discovered to use incompatible reliability with the initial subscriber setup.
+- `encoder_odom.py` had to be updated to subscribe with `BEST_EFFORT` QoS so it could receive hardware tick topics reliably.
+- With those fixes applied, the minimal stack successfully produced:
+  - `/odom`
+  - `/odometry/filtered`
+  - TF `odom -> base_footprint`
+
+Observed validation result:
+- The plumbing path is now confirmed healthy:
+  - encoders -> `encoder_odom.py` -> `/odom` -> EKF -> `/odometry/filtered` + TF
+- Manual hardware movement produced live odom and TF updates, confirming the minimal chain is functional.
+- Example validated behavior:
+  - forward motion near `0.51 m`
+  - small initial yaw drift around `-0.95 deg`
+  - EKF and TF visibly tracked motion in real time
+
+Status update after 2026-04-26 hardware validation:
+- Estimation quality is now good enough for controlled motion testing with Nav2 still disabled.
+- Wheel encoder odom + BNO055 IMU fusion produced an almost perfect square pattern while correcting yaw orientation online.
+- The validated square-test path used movement commands only: launch the minimal EKF/encoder/IMU stack, then run `square_test.py`.
+- The prior jumpy-odom concern should remain in mind, but the current validated result means the next work is Nav2 re-enable / stack integration, not basic odom plumbing.
+
+Priority after this milestone:
+1. Preserve the validated encoder + BNO055 + EKF baseline as the hardware truth.
+2. Reintroduce LD19 + SLAM + Nav2 conservatively on top of that baseline.
+3. Keep VSLAM optional during first Nav2 re-enable; do not let it publish competing TF or replace wheel odom.
+4. Use simulation next to match the validated hardware-software integration contracts, not to invent a separate autonomy path.
+
+Recommended debug commands for this stage:
+
+```bash
+ros2 topic echo /sensors/roboclaw/encoders/left_m1/ticks
+ros2 topic echo /sensors/roboclaw/encoders/right_m1/ticks
+ros2 topic echo /odom
+ros2 topic echo /odometry/filtered
+ros2 topic echo /sensors/bno055/imu/data
+ros2 run tf2_ros tf2_echo odom base_footprint
+```
+
+### 8.12 Humble-Jetson Lightweight VSLAM Validation Milestone (2026-04-16)
+
+- A lightweight ZED VSLAM bringup path was integrated into `maya.launch.xml` on branch `humble-jetson-minimal-odom`.
+- Purpose:
+  - validate a Jetson-local stereo VSLAM pipeline that is compatible with low-bandwidth remote RViz use over Wi-Fi.
+  - keep the VSLAM subsystem separate from Nav2 and EKF during first validation.
+- Design rule established in this milestone:
+  - primary IMU for this hardware stack remains `/sensors/bno055/imu/data`
+  - ZED IMU must not silently become the default IMU for the rover autonomy baseline
+
+Validated isolated VSLAM launch intent (Jetson, Humble):
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false \
+  rviz:=false \
+  use_nav2:=false \
+  use_ekf:=false \
+  use_encoder_odom:=false \
+  use_ld19:=false \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false \
+  use_zed:=true \
+  use_vslam:=true \
+  zed_camera_model:=zed2i \
+  zed_camera_name:=zed2i \
+  zed_node_name:=zed_node \
+  zed_enable_ipc:=false \
+  zed_publish_tf:=false \
+  zed_publish_map_tf:=false \
+  use_zed_static_tf:=false \
+  vslam_imu_topic:=/sensors/bno055/imu/data \
+  vslam_enable_landmarks_view:=true \
+  vslam_enable_observations_view:=false \
+  vslam_enable_slam_visualization:=true
+```
+
+Implementation/bringup lessons captured:
+- `maya.launch.xml` now supports an explicit `use_vslam` path instead of requiring a manual 3-terminal workflow.
+- `zed_bgra_to_rgb.py` was parameterized so it no longer depends on one hard-coded ZED namespace.
+- `zed_vslam.launch.py` had to be reworked to avoid Humble launch frontend/type issues:
+  - component parameter arrays must be passed as real resolved Python values
+  - simple literal defaults are more reliable than clever launch substitution composition in this path
+- Isaac ROS VSLAM rejects odd image dimensions:
+  - previous ZED custom publish size produced `427x240`
+  - VSLAM failed with `Odd Image width or height`
+  - `pub_downscale_factor` was changed to `5.0`, producing an even image size (`384x216`) suitable for VSLAM
+
+ZED VSLAM profile rules established:
+- use a dedicated override file:
+  - `src/maya_bringup/config/zed2i_vslam_override.yaml`
+- keep the ZED ROS graph minimal:
+  - stereo images enabled
+  - camera info enabled as needed by wrapper
+  - IMU enabled
+  - depth disabled
+  - point cloud disabled
+  - object detection disabled
+  - body tracking disabled
+  - mapping disabled
+  - status disabled
+- current lightweight defaults:
+  - `pub_frame_rate: 8.0`
+  - `pub_resolution: CUSTOM`
+  - `pub_downscale_factor: 5.0`
+
+Observed validation result:
+- The integrated VSLAM component now loads and initializes successfully.
+- Relevant VSLAM topics observed:
+  - `/visual_slam/tracking/odometry`
+  - `/visual_slam/tracking/slam_path`
+  - `/visual_slam/tracking/vo_path`
+  - `/visual_slam/tracking/vo_pose`
+  - `/visual_slam/tracking/vo_pose_covariance`
+  - `/visual_slam/vis/landmarks_cloud`
+  - `/visual_slam/vis/observations_cloud`
+  - `/visual_slam/vis/slam_odometry`
+  - additional pose-graph/localizer visualization topics
+- Current remote-operator interest was narrowed to:
+  - `/visual_slam/vis/landmarks_cloud`
+  - `/visual_slam/vis/observations_cloud`
+  - `/visual_slam/tracking/odometry`
+  - `/visual_slam/tracking/slam_path`
+
+Bandwidth result from image-side measurements:
+- left/right ZED raw rect images and the local rgb8 republished images together are roughly within about `0.9 MB/s` to `1.2 MB/s` steady-state in the tested configuration.
+- This is within the practical Wi-Fi target budget, but the remaining bandwidth risk is likely dominated by VSLAM visualization topics rather than the downscaled stereo images themselves.
+
+Important functional note:
+- `vslam_enable_slam_visualization:=false` did not remove all of the extra VSLAM visualization outputs as hoped.
+- Operationally, topic-level selection on the PC side and/or future deeper launch/runtime pruning is still required.
+
+Interpretation of this milestone:
+- isolated lightweight VSLAM is now structurally validated
+- minimal encoder odom + EKF is structurally validated
+- the next problem is integration quality, not basic bringup
+
+Next logical steps toward autonomy integration (execution order):
+1. Measure the actual bandwidth/rate cost of the VSLAM topics that matter most:
+   - `/visual_slam/vis/landmarks_cloud`
+   - `/visual_slam/vis/observations_cloud`
+   - `/visual_slam/tracking/odometry`
+   - `/visual_slam/tracking/slam_path`
+2. Define the minimal remote VSLAM topic contract for Wi-Fi mode:
+   - keep only operator-useful topics subscribed from the PC
+   - treat landmarks + tracking odometry/path as preferred candidates
+3. Inspect the VSLAM topic/frame contract before fusion:
+   - `header.frame_id`
+   - `child_frame_id`
+   - covariance sanity
+   - update rate
+   - failure behavior when visual features are weak/lost
+4. Integrate VSLAM conservatively with the minimal odom milestone:
+   - wheel encoder odom remains the baseline local motion source
+   - BNO055 remains the primary IMU
+   - VSLAM becomes a secondary visual odometry / drift-reduction source
+5. Tune `src/maya_bringup/config/ekf.yaml` for the fused HW stack:
+   - wheel odom + BNO055 first
+   - then add VSLAM only after its outputs are trusted
+6. Re-enable Nav2 only after the fused estimate is stable enough that:
+   - `odom -> base_footprint` is smooth
+   - pose jumps are eliminated or rare enough to be operationally acceptable
+   - bandwidth remains within Wi-Fi operating limits with headroom
+
+Integration principle locked by this milestone:
+- VSLAM should augment the minimal encoder-odom baseline, not replace it.
+- The rover must retain a usable local odom solution if visual tracking degrades.
+
+EKF inference locked after review of `src/maya_bringup/config/ekf.yaml`:
+- The current EKF should continue to serve as the **local odom filter**:
+  - `world_frame: odom`
+  - EKF owns `odom -> base_footprint`
+- The safe baseline remains:
+  - `odom0 = /odom` from wheel encoder odom
+  - `imu0 = /sensors/bno055/imu/data`
+- Do not let VSLAM publish competing local TF ownership into the same chain used by Nav2.
+- Do not replace the wheel-odom baseline with VSLAM.
+- Do not fuse multiple rotational sources aggressively at first.
+
+Conservative fusion path inferred from the current validated subsystems:
+1. Stabilize encoder odom + BNO055 + EKF first.
+2. Inspect one real message from:
+   - `/visual_slam/tracking/odometry`
+3. Verify before fusion:
+   - `header.frame_id`
+   - `child_frame_id`
+   - covariance sanity
+   - update rate
+   - behavior during feature loss
+4. If the topic contract is sane, add VSLAM as a **secondary odometry source** in EKF:
+   - preferred first candidate: `odom1 = /visual_slam/tracking/odometry`
+5. First fusion should be conservative:
+   - prefer planar pose correction from VSLAM (`x`, `y`, `yaw`)
+   - keep wheel odom as the main short-term motion prior
+   - keep BNO055 as the primary yaw / yaw-rate source
+   - do not fuse extra VSLAM twists until they are shown to be stable and useful
+6. Re-enable Nav2 only after the fused local odom estimate is smooth under:
+   - slow straight drive
+   - slow in-place turn
+
+Operational rule from this inference:
+- VSLAM is a drift-reduction / visual odom aid layered on top of the minimal odom milestone.
+- If vision degrades, the rover must still have a usable EKF odom chain from encoders + BNO055.
+
+### 8.13 Hardware Motion + Wi-Fi VSLAM Validation Milestone (2026-04-26)
+
+Validated minimal motion stack:
+
+```bash
+ros2 launch maya_bringup maya.launch.xml \
+  sim:=false \
+  rviz:=false \
+  use_nav2:=false \
+  use_zed:=false \
+  use_vslam:=false \
+  use_ld19:=false \
+  use_depth_scan:=false \
+  use_aruco:=false \
+  use_yolo:=false \
+  use_ekf:=true \
+  use_encoder_odom:=true \
+  use_imu_sanitizer:=true \
+  encoder_ticks_per_rev:=7400 \
+  encoder_wheel_separation:=1.0 \
+  encoder_publish_tf:=false
+```
+
+Validated square-test command:
+
+```bash
+ros2 run maya_bringup square_test.py --ros-args \
+  -p side_length:=5.0 \
+  -p turn_angle_deg:=90.0 \
+  -p linear_speed:=0.15 \
+  -p angular_speed:=0.25 \
+  -p heading_gain:=1.25 \
+  -p max_heading_correction:=0.1 \
+  -p pause_sec:=1.0
+```
+
+Observed result:
+- Wheel encoder odom + BNO055 IMU fusion achieved an almost perfect square pattern.
+- Yaw orientation was corrected online during the drive segments.
+- The test did not require Nav2, LiDAR, ZED, VSLAM, ArUco, YOLO, or depth scan layers.
+- `square_test.py` now supports both right and left turns through the sign of `turn_angle_deg`.
+- `imu_sanitize_relay.py` must be executable because it is launched as a runtime script.
+
+Validated VSLAM-over-Wi-Fi path:
+
+```bash
+ros2 launch zed_wrapper zed_camera.launch.py \
+  camera_model:=zed2i \
+  camera_name:=zed2i \
+  node_name:=zed_node \
+  publish_tf:=false \
+  publish_map_tf:=false \
+  enable_ipc:=false \
+  ros_params_override_path:=/home/ro/AutoNav_Mission_2026/src/maya_bringup/config/zed2i_vslam_override.yaml
+
+ros2 run maya_bringup zed_bgra_to_rgb.py
+ros2 launch maya_bringup zed_vslam.launch.py
+```
+
+Observed result:
+- VSLAM can run over the limited Wi-Fi link in the tested lightweight ZED configuration.
+- This upgrades VSLAM from "structurally integrated" to "bandwidth-viable as an optional local/remote aid".
+- It still must not replace the wheel encoder + IMU odom baseline or publish competing TF in the Nav2 chain.
+
+Mission-status interpretation:
+- The hardware baseline has crossed from bringup/plumbing into controlled autonomy integration.
+- Next engineering target is Nav2 re-enable on top of the validated encoder + IMU + EKF motion baseline.
+- Simulation work should now be made compatible with this validated hardware-software contract.
+
+### 8.14 Wireless-First Integration Rule and Fresh Validation Order (2026-04-16 / refreshed 2026-04-26)
+
+- After bringing up the combined stack (`encoders + BNO055 + LD19 + EKF + SLAM + Nav2 + ZED VSLAM`), the next architecture decision was clarified:
+  - the main problem is no longer "can all subsystems launch together?"
+  - the main problem is "what must stay local on Jetson and what is actually worth transmitting over the wireless link?"
+- The correct operating model for the field stack is now:
+  - compute locally on Jetson
+  - fuse locally on Jetson
+  - transmit only operator-critical outputs
+  - avoid streaming raw intermediate perception topics unless explicitly needed for debugging
+
+Wireless-first integration rule:
+- Anything that can be computed locally without being published for remote consumption should remain local.
+- The wireless link should be treated as an operator/control channel, not as a full raw-sensor replication channel.
+- The goal is to preserve headroom and reliability on the link, not merely to fit under an optimistic throughput limit.
+
+Topics/classes of data that should remain local on Jetson by default:
+- raw encoder tick topics
+- raw IMU streams
+- raw `/scan` as a permanent remote feed
+- raw stereo image topics
+- most VSLAM internal/debug visualization topics
+- dense intermediate clouds unless a specific debugging need justifies them
+- high-rate estimator internals that do not directly improve operator decisions
+
+Topics/classes of data that are appropriate to expose remotely for normal operation:
+- compressed operator image stream
+- `/map`
+- `/tf`
+- `/tf_static`
+- `/odometry/filtered`
+- goal / waypoint / spin interfaces
+- Nav2 status / feedback
+- optionally a small number of reduced, operator-useful visualization topics if they are proven worth the bandwidth
+
+Odometry-source interpretation refined during this stage:
+- The rover now has multiple odometry/localization ingredients available or partially available:
+  - wheel encoder odom
+  - IMU
+  - lidar-driven localization / SLAM contribution
+  - visual odometry / visual SLAM contribution
+- These must not be treated as equal just because they exist.
+- Before any source is trusted as part of the field autonomy baseline, it must be evaluated for:
+  - frame contract
+  - covariance sanity
+  - update rate
+  - stationary drift
+  - behavior during degradation or loss
+
+Current practical architecture direction:
+- local motion prior / fallback:
+  - wheel encoders
+  - BNO055 IMU
+- local/global correction sources:
+  - lidar-based SLAM/localization
+  - VSLAM only if it provides net value
+- local fused pose for autonomy:
+  - `/odometry/filtered`
+  - EKF-owned `odom -> base_footprint`
+- localization layer:
+  - `map -> odom`
+
+Important integration principle locked here:
+- Do not keep all available odometry sources in the field stack by default just because they can be launched together.
+- The first field-capable wireless autonomy stack should prefer the smallest onboard stack that works reliably.
+- VSLAM is now considered optional until it proves that it materially improves autonomy quality without destabilizing TF, overloading Jetson, or consuming too much wireless/debug budget.
+
+Recommended minimum field-capable autonomy baseline for wireless operation:
+- wheel encoder odom
+- BNO055 IMU
+- EKF
+- LD19
+- `slam_toolbox`
+- Nav2
+- one compressed ZED operator-view stream
+
+Recommended interpretation of VSLAM at this stage:
+- keep VSLAM as an optional local aid
+- do not assume it belongs in the first wireless field baseline
+- only retain it in the baseline if side-by-side tests show a clear net gain
+
+Fresh validation order for the next session:
+1. Re-test the minimum local autonomy stack **without VSLAM**:
+   - encoders + BNO055 + EKF + LD19 + SLAM + Nav2
+2. Validate that this minimum stack is autonomously usable before adding more odometry sources.
+3. Measure the remote wireless budget for only:
+   - compressed image
+   - `/map`
+   - `/tf`
+   - `/tf_static`
+   - `/odometry/filtered`
+   - goals / feedback
+4. Confirm that remote RViz and operator control remain reliable with that minimal export contract.
+5. Only then repeat the same test with VSLAM enabled locally.
+6. Compare:
+   - autonomy quality
+   - TF stability
+   - Jetson load
+   - bandwidth/debug cost
+7. Keep VSLAM in the baseline only if it is clearly a net win.
+
+Next logical step for a fresh session:
+- start from the minimum wireless-ready autonomy stack **without VSLAM**
+- verify it can:
+  - launch cleanly
+  - maintain `odom -> base_footprint`
+  - maintain `map -> odom`
+  - accept short Nav2 goals
+  - remain usable over the intended wireless link
+- after that baseline is accepted, run the exact same autonomy test again with VSLAM enabled and judge whether it should remain part of the field stack.

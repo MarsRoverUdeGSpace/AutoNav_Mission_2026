@@ -127,7 +127,7 @@
   <!-- Gazebo drive parameters for skid steer model.
        wheel_separation is lateral distance between left/right wheel centers.
        drive_wheel_radius is effective rolling radius. -->
-  <xacro:property name="drive_wheel_separation" value="1.09449"/>
+  <xacro:property name="drive_wheel_separation" value="1.0"/>
   <xacro:property name="drive_wheel_radius"     value="0.1636"/>
 
 </robot>
