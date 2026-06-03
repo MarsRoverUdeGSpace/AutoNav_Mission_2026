@@ -1,6 +1,7 @@
 ########################
 # OS / Editor cruft
 ########################
+.codex
 # macOS
 .DS_Store
 .AppleDouble
@@ -123,7 +124,7 @@ gzclient.log
 # Temporary data dumps / scratch
 tmp/
 temp/
+.codex
 *.bak
 *.old
 *.orig
-

@@ -1,0 +1,82 @@
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    two_d_mode: true
+    publish_acceleration: false
+    publish_tf: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    odom0: /odom
+    # Use wheel odom for planar position and heading pose, but do not also fuse
+    # wheel-derived yaw rate. Fuse its zero lateral velocity: Maya is
+    # nonholonomic, so that constraint prevents stationary lateral uncertainty
+    # from expanding while the IMU supplies yaw rate.
+    odom0_config: [true,  true,  false,
+                   false, false, true,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative: false
+
+    imu0: /imu
+    # Hardware IMU orientation is not yet trustworthy enough to fuse directly.
+    # Use yaw rate only until the upstream IMU publisher and frame behavior are
+    # validated more rigorously on Jetson.
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_remove_gravitational_acceleration: true
+    imu0_differential: false
+    # Relative orientation is not used when only yaw rate is fused.
+    imu0_relative: false
+
+    # Full flattened 15x15 diagonal matrix. Maya deploys ROS 2 Humble, whose
+    # robot_localization requires 225 entries here; do not shorten this to the
+    # diagonal-only form accepted by newer desktop/Jazzy builds. Order is x, y,
+    # z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az.
+    # Keep unused 3D states bounded: the filter still publishes their covariance.
+    process_noise_covariance: [
+      0.02, 0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.02,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.06, 0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.03, 0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.03, 0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.01, 0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.05, 0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.04, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.02, 0.0,  0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,
+      0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015
+    ]
+
+    # Humble likewise requires this full flattened 15x15 matrix. Keep every
+    # state initially bounded; large unmeasured-state values caused the
+    # exploding stationary covariance.
+    initial_estimate_covariance: [
+      0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01
+    ]

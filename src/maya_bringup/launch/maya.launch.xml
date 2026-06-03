@@ -1,0 +1,433 @@
+<launch>
+    <arg name="sim" default="true" />
+    <arg name="use_sim_time" default="$(var sim)" />
+
+    <!-- Heightmap world is more stable on ogre; allow override via args -->
+    <arg name="render_engine" default="ogre" />
+    <arg name="render_engine_gui" default="ogre" />
+    <set_env name="GZ_RENDER_ENGINE" value="$(var render_engine)" />
+    <set_env name="IGN_RENDER_ENGINE" value="$(var render_engine)" />
+
+    <!-- Use default physics engine unless overridden -->
+    <arg name="world" default="random_world.sdf" />
+    <arg name="gz_args" default="$(var world) --render-engine $(var render_engine) --render-engine-gui $(var render_engine_gui) -r" />
+    <arg name="spawn_x" default="2.0" />
+    <arg name="spawn_y" default="2.0" />
+    <arg name="spawn_z" default="1.0" />
+    <arg name="spawn_yaw" default="0.0" />
+
+    <arg name="map" default="" />
+    <arg name="rviz" default="$(var sim)" />
+    <arg name="use_nav2" default="true" />
+
+    <!-- ZED -->
+    <arg name="use_zed" default="false" />
+    <arg name="use_vslam" default="false" />
+    <!-- LD19 LiDAR (HW only) -->
+    <arg name="use_ld19" default="false" />
+    <arg name="lidar_port" default="/dev/ttyUSB1" />
+    <arg name="ld19_frame_id" default="base_laser" />
+    <arg name="hw_scan_frame_id" default="base_laser" />
+    <arg name="zed_camera_model" default="zed2i" />
+    <arg name="zed_camera_name" default="zed2i" />
+    <arg name="zed_node_name" default="zed_node" />
+    <arg name="zed_enable_ipc" default="false" />
+    <arg name="zed_publish_tf" default="true" />
+    <arg name="zed_publish_map_tf" default="true" />
+    <!-- Empty means "no override"; set to your YAML path on Jetson -->
+    <arg name="zed_ros_params_override" default="$(find-pkg-share zed_wrapper)/config/profiles/halow_32mbps.yaml" />
+    <arg name="zed_vslam_ros_params_override" default="$(find-pkg-share maya_bringup)/config/zed2i_vslam_override.yaml" />
+
+    <arg name="use_zed_static_tf" default="true" />
+    <arg name="zed_tf_parent" default="base_link" />
+    <arg name="zed_tf_child" default="zed_camera_link" />
+    <arg name="zed_tf_x" default="0.0" />
+    <arg name="zed_tf_y" default="-0.30" />
+    <arg name="zed_tf_z" default="0.10" />
+    <arg name="zed_tf_roll" default="0.0" />
+    <arg name="zed_tf_pitch" default="0.0" />
+    <arg name="zed_tf_yaw" default="-1.57079632679" />
+
+    <!-- Optional subsystems (useful when IMU/pointcloud are disabled) -->
+    <arg name="use_depth_scan" default="true" />
+    <arg name="use_ekf" default="true" />
+    <arg name="use_gnss_waypoint_controller" default="false" />
+    <!-- Keep this a plain boolean for ROS 2 Humble XML frontend compatibility.
+         Hardware bringup should pass use_encoder_odom:=true explicitly. -->
+    <arg name="use_encoder_odom" default="false" />
+
+    <!-- Topics (kept for future; can be ignored if subsystems are disabled) -->
+    <arg name="odom_topic" default="/odom" />
+    <arg name="imu_topic" default="/sensors/bno055/imu/data" />
+    <arg name="use_imu_sanitizer" default="false" />
+    <arg name="sanitized_imu_topic" default="/imu" />
+    <arg name="sanitized_imu_frame_id" default="" />
+    <arg name="pointcloud_topic" default="/depth_camera/points" />
+    <arg name="vslam_imu_topic" default="/sensors/bno055/imu/data" />
+    <arg name="use_vslam_odom_relay" default="false" />
+    <arg name="use_vslam_odom_fusion" default="false" />
+    <arg name="vslam_odom_topic" default="/visual_slam/tracking/odometry" />
+    <arg name="vslam_odom_base_topic" default="/visual_slam/tracking/odometry_base" />
+    <arg name="vslam_camera_frame" default="$(var zed_camera_name)_camera_link" />
+    <arg name="left_encoder_ticks_topic" default="/sensors/roboclaw/encoders/left_m1/ticks" />
+    <arg name="right_encoder_ticks_topic" default="/sensors/roboclaw/encoders/right_m1/ticks" />
+    <arg name="encoder_msg_type" default="std_msgs/msg/Int32" />
+    <arg name="encoder_ticks_per_rev" default="7400" />
+    <arg name="encoder_wheel_radius" default="0.1636" />
+    <arg name="encoder_wheel_separation" default="1.0" />
+    <arg name="left_encoder_ticks_sign" default="1.0" />
+    <arg name="right_encoder_ticks_sign" default="-1.0" />
+    <arg name="encoder_publish_tf" default="false" />
+
+    <!-- Direct GNSS waypoint controller for first field tests. Run with Nav2 off. -->
+    <arg name="gnss_target_latitude" default="0.0" />
+    <arg name="gnss_target_longitude" default="0.0" />
+    <arg name="gnss_waypoints" default="" />
+    <arg name="gnss_goal_radius_m" default="3.0" />
+    <arg name="gnss_max_linear_speed_mps" default="0.15" />
+    <arg name="gnss_max_angular_speed_radps" default="0.35" />
+    <arg name="gnss_initial_compass_heading_deg" default="nan" />
+    <arg name="gnss_yaw_offset_rad" default="nan" />
+    <arg name="gnss_allow_odom_yaw_as_enu" default="false" />
+    <arg name="gnss_auto_yaw_calibration" default="false" />
+    <arg name="gnss_auto_yaw_calibration_min_gnss_m" default="3.0" />
+    <arg name="gnss_auto_yaw_calibration_min_odom_m" default="1.0" />
+    <arg name="gnss_auto_yaw_calibration_max_correction_rad" default="3.14159" />
+    <arg name="gnss_goal_reached_mode_hold_s" default="5.0" />
+    <arg name="gnss_goal_reached_required_samples" default="3" />
+    <arg name="gnss_waypoint_timeout_s" default="180.0" />
+    <arg name="gnss_no_progress_timeout_s" default="30.0" />
+    <arg name="gnss_no_progress_min_delta_m" default="1.0" />
+
+    <!-- ArUco -->
+    <arg name="use_aruco" default="$(var use_zed)" />
+    <arg name="aruco_use_compressed" default="true" />
+    <arg name="aruco_image_topic" default="/zed/zed_node/rgb/color/rect/image" />
+    <arg name="aruco_compressed_topic" default="/zed/zed_node/rgb/color/rect/image/compressed" />
+    <arg name="aruco_save_dir" default="/home/ro/aruco_captures" />
+    <arg name="aruco_dictionary" default="DICT_4X4_50" />
+    <arg name="aruco_annotated_jpeg_quality" default="35" />
+    <arg name="aruco_annotated_topic" default="/aruco/annotated_image" />
+    <arg name="aruco_publish_annotated_compressed" default="true" />
+    <arg name="aruco_publish_annotated_raw" default="false" />
+    <arg name="aruco_annotated_raw_topic" default="/aruco/annotated_image/raw" />
+
+    <!-- YOLO -->
+    <arg name="use_yolo" default="false" />
+    <arg name="yolo_use_compressed" default="true" />
+    <arg name="yolo_compressed_topic" default="/zed/zed_node/rgb/color/rect/image/compressed" />
+    <arg name="yolo_model_path" default="$(find-pkg-share maya_bringup)/models/maya.pt" />
+    <arg name="yolo_device" default="cuda:0" />
+    <arg name="yolo_conf_threshold" default="0.35" />
+    <arg name="yolo_iou_threshold" default="0.45" />
+    <arg name="yolo_annotated_topic" default="/yolo/annotated_image" />
+    <arg name="yolo_annotated_jpeg_quality" default="35" />
+    <arg name="yolo_publish_annotated_compressed" default="true" />
+    <arg name="yolo_publish_annotated_raw" default="true" />
+    <arg name="yolo_annotated_raw_topic" default="/yolo/annotated_image/raw" />
+    <arg name="yolo_detections_topic" default="/yolo/detections_json" />
+    <arg name="yolo_process_every_n" default="1" />
+    <arg name="use_zed_bgra_to_rgb" default="$(var use_vslam)" />
+    <arg name="vslam_enable_slam_visualization" default="true" />
+    <arg name="vslam_enable_landmarks_view" default="true" />
+    <arg name="vslam_enable_observations_view" default="false" />
+
+    <let name="gazebo_config_path" value="$(find-pkg-share maya_bringup)/config/gazebo_bridge.yaml" />
+    <let name="urdf_path" value="$(find-pkg-share maya_description)/urdf/maya_description.urdf.xacro" />
+    <let name="rviz_path" value="$(find-pkg-share maya_description)/rviz/maya_description.rviz" />
+
+    <!-- ZED group -->
+    <group if="$(var use_zed)">
+        <group if="$(var use_vslam)">
+            <include file="$(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py">
+                <arg name="camera_model" value="$(var zed_camera_model)" />
+                <arg name="camera_name" value="$(var zed_camera_name)" />
+                <arg name="node_name" value="$(var zed_node_name)" />
+                <arg name="publish_tf" value="$(var zed_publish_tf)" />
+                <arg name="publish_map_tf" value="$(var zed_publish_map_tf)" />
+                <arg name="enable_ipc" value="$(var zed_enable_ipc)" />
+                <arg name="ros_params_override_path" value="$(var zed_vslam_ros_params_override)" />
+            </include>
+        </group>
+
+        <group unless="$(var use_vslam)">
+            <include file="$(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py">
+                <arg name="camera_model" value="$(var zed_camera_model)" />
+                <arg name="camera_name" value="$(var zed_camera_name)" />
+                <arg name="node_name" value="$(var zed_node_name)" />
+                <arg name="publish_tf" value="$(var zed_publish_tf)" />
+                <arg name="publish_map_tf" value="$(var zed_publish_map_tf)" />
+                <arg name="enable_ipc" value="$(var zed_enable_ipc)" />
+                <arg name="ros_params_override_path" value="$(var zed_ros_params_override)" />
+            </include>
+        </group>
+
+        <group if="$(var use_zed_bgra_to_rgb)">
+            <node pkg="maya_bringup" exec="zed_bgra_to_rgb.py" name="zed_bgra_to_rgb" output="screen">
+                <param name="left_input_topic" value="/$(var zed_camera_name)/$(var zed_node_name)/left/color/rect/image" />
+                <param name="right_input_topic" value="/$(var zed_camera_name)/$(var zed_node_name)/right/color/rect/image" />
+                <param name="left_output_topic" value="/$(var zed_camera_name)/$(var zed_node_name)/left/color/rect/image_rgb8" />
+                <param name="right_output_topic" value="/$(var zed_camera_name)/$(var zed_node_name)/right/color/rect/image_rgb8" />
+            </node>
+        </group>
+
+        <group if="$(var use_vslam)">
+            <include file="$(find-pkg-share maya_bringup)/launch/zed_vslam.launch.py">
+                <arg name="camera_name" value="$(var zed_camera_name)" />
+                <arg name="node_name" value="$(var zed_node_name)" />
+                <arg name="imu_topic" value="$(var vslam_imu_topic)" />
+                <arg name="enable_slam_visualization" value="$(var vslam_enable_slam_visualization)" />
+                <arg name="enable_landmarks_view" value="$(var vslam_enable_landmarks_view)" />
+                <arg name="enable_observations_view" value="$(var vslam_enable_observations_view)" />
+            </include>
+        </group>
+
+        <group if="$(var use_vslam_odom_relay)">
+            <node pkg="maya_bringup" exec="vslam_odom_relay.py" name="vslam_odom_relay" output="screen">
+                <param name="input_topic" value="$(var vslam_odom_topic)" />
+                <param name="output_topic" value="$(var vslam_odom_base_topic)" />
+                <param name="odom_frame_id" value="odom" />
+                <param name="base_frame_id" value="base_footprint" />
+                <param name="camera_frame_id" value="$(var vslam_camera_frame)" />
+            </node>
+        </group>
+
+        <group if="$(var use_aruco)">
+            <node pkg="maya_aruco_detector" exec="aruco_detector" name="aruco_detector" output="screen">
+                <param name="use_compressed" value="$(var aruco_use_compressed)" />
+                <param name="image_topic" value="$(var aruco_image_topic)" />
+                <param name="compressed_topic" value="$(var aruco_compressed_topic)" />
+                <param name="save_dir" value="$(var aruco_save_dir)" />
+                <param name="aruco_dictionary" value="$(var aruco_dictionary)" />
+                <param name="annotated_jpeg_quality" value="$(var aruco_annotated_jpeg_quality)" />
+                <param name="annotated_topic" value="$(var aruco_annotated_topic)" />
+                <param name="publish_annotated_compressed" value="$(var aruco_publish_annotated_compressed)" />
+                <param name="publish_annotated_raw" value="$(var aruco_publish_annotated_raw)" />
+                <param name="annotated_raw_topic" value="$(var aruco_annotated_raw_topic)" />
+            </node>
+        </group>
+
+        <group if="$(var use_yolo)">
+            <node pkg="maya_bringup" exec="yolo_detector.py" name="yolo_detector" output="screen">
+                <param name="use_compressed" value="$(var yolo_use_compressed)" />
+                <param name="compressed_topic" value="$(var yolo_compressed_topic)" />
+                <param name="model_path" value="$(var yolo_model_path)" />
+                <param name="device" value="$(var yolo_device)" />
+                <param name="conf_threshold" value="$(var yolo_conf_threshold)" />
+                <param name="iou_threshold" value="$(var yolo_iou_threshold)" />
+                <param name="annotated_topic" value="$(var yolo_annotated_topic)" />
+                <param name="annotated_jpeg_quality" value="$(var yolo_annotated_jpeg_quality)" />
+                <param name="publish_annotated_compressed" value="$(var yolo_publish_annotated_compressed)" />
+                <param name="publish_annotated_raw" value="$(var yolo_publish_annotated_raw)" />
+                <param name="annotated_raw_topic" value="$(var yolo_annotated_raw_topic)" />
+                <param name="detections_topic" value="$(var yolo_detections_topic)" />
+                <param name="process_every_n" value="$(var yolo_process_every_n)" />
+            </node>
+        </group>
+
+        <group if="$(var use_zed_static_tf)">
+            <node pkg="tf2_ros" exec="static_transform_publisher"
+                  args="--x $(var zed_tf_x) --y $(var zed_tf_y) --z $(var zed_tf_z) --roll $(var zed_tf_roll) --pitch $(var zed_tf_pitch) --yaw $(var zed_tf_yaw) --frame-id $(var zed_tf_parent) --child-frame-id $(var zed_tf_child)" />
+        </group>
+    </group>
+
+    <!-- Robot state publisher -->
+    <node pkg="robot_state_publisher" exec="robot_state_publisher">
+        <param name="robot_description" value="$(command 'xacro $(var urdf_path)')" />
+        <param name="use_sim_time" value="$(var use_sim_time)" />
+    </node>
+
+    <!-- Simulation (Gazebo) -->
+    <group if="$(var sim)">
+        <set_env name="GZ_SIM_RESOURCE_PATH" value="$(find-pkg-share maya_bringup)/world" />
+        <set_env name="IGN_GAZEBO_RESOURCE_PATH" value="$(find-pkg-share maya_bringup)/world" />
+        <include file="$(find-pkg-share ros_gz_sim)/launch/gz_sim.launch.py">
+            <arg name="gz_args" value="$(var gz_args)" />
+        </include>
+        <node pkg="ros_gz_sim" exec="create"
+              args="-topic robot_description -x $(var spawn_x) -y $(var spawn_y) -z $(var spawn_z) -Y $(var spawn_yaw)" />
+        <node pkg="ros_gz_bridge" exec="parameter_bridge">
+            <param name="config_file" value="$(var gazebo_config_path)" />
+        </node>
+    </group>
+
+    <!-- LD19 hardware lidar driver (guarded; only for sim:=false) -->
+    <group unless="$(var sim)">
+        <group if="$(var use_imu_sanitizer)">
+            <node pkg="maya_bringup" exec="imu_sanitize_relay.py" name="imu_sanitize_relay" output="screen">
+                <param name="input_topic" value="$(var imu_topic)" />
+                <param name="output_topic" value="$(var sanitized_imu_topic)" />
+                <param name="frame_id_override" value="$(var sanitized_imu_frame_id)" />
+            </node>
+        </group>
+        <group if="$(var use_encoder_odom)">
+            <node pkg="maya_bringup" exec="encoder_odom.py" name="encoder_odom" output="screen">
+                <param name="left_ticks_topic" value="$(var left_encoder_ticks_topic)" />
+                <param name="right_ticks_topic" value="$(var right_encoder_ticks_topic)" />
+                <param name="encoder_msg_type" value="$(var encoder_msg_type)" />
+                <param name="ticks_per_rev" value="$(var encoder_ticks_per_rev)" />
+                <param name="wheel_radius" value="$(var encoder_wheel_radius)" />
+                <param name="wheel_separation" value="$(var encoder_wheel_separation)" />
+                <param name="left_ticks_sign" value="$(var left_encoder_ticks_sign)" />
+                <param name="right_ticks_sign" value="$(var right_encoder_ticks_sign)" />
+                <param name="odom_topic" value="$(var odom_topic)" />
+                <param name="publish_tf" value="$(var encoder_publish_tf)" />
+            </node>
+        </group>
+        <group if="$(var use_ld19)">
+            <node pkg="ldlidar_stl_ros2" exec="ldlidar_stl_ros2_node" name="LD19" output="screen">
+                <param name="product_name" value="LDLiDAR_LD19" />
+                <param name="topic_name" value="scan" />
+                <param name="frame_id" value="$(var ld19_frame_id)" />
+                <param name="port_name" value="$(var lidar_port)" />
+                <param name="port_baudrate" value="230400" />
+                <param name="laser_scan_dir" value="true" />
+                <param name="enable_angle_crop_func" value="false" />
+                <param name="angle_crop_min" value="135.0" />
+                <param name="angle_crop_max" value="225.0" />
+            </node>
+            <!-- Keep vendor standalone TF for base_laser while HW frame contract is being normalized. -->
+            <node pkg="tf2_ros" exec="static_transform_publisher"
+                  name="base_link_to_base_laser_ld19"
+                  args="0 0 0.18 0 0 0 base_link $(var ld19_frame_id)" />
+        </group>
+    </group>
+
+    <!-- Lidar scan frame relay -->
+    <group if="$(var sim)">
+        <node pkg="maya_bringup" exec="scan_frame_relay.py" name="scan_frame_relay" output="screen">
+            <param name="input_topic" value="/scan" />
+            <param name="output_topic" value="/scan_fixed" />
+            <param name="frame_id" value="lidar_link" />
+        </node>
+    </group>
+    <group unless="$(var sim)">
+      <group if="$(var use_ld19)">
+        <node pkg="maya_bringup" exec="scan_frame_relay.py" name="scan_frame_relay" output="screen">
+            <param name="input_topic" value="/scan" />
+            <param name="output_topic" value="/scan_fixed" />
+            <param name="frame_id" value="$(var hw_scan_frame_id)" />
+        </node>
+      </group>
+    </group>
+
+    <!-- Depth cloud -> scan (disable when ZED pointcloud is disabled) -->
+    <group if="$(var use_depth_scan)">
+        <node pkg="pointcloud_to_laserscan" exec="pointcloud_to_laserscan_node" name="depth_cloud_to_scan" output="screen">
+            <param name="target_frame" value="base_footprint" />
+            <param name="transform_tolerance" value="0.05" />
+            <param name="min_height" value="0.05" />
+            <param name="max_height" value="0.8" />
+            <param name="angle_min" value="-3.14159" />
+            <param name="angle_max" value="3.14159" />
+            <param name="angle_increment" value="0.00872665" />
+            <param name="scan_time" value="0.0167" />
+            <param name="range_min" value="0.05" />
+            <param name="range_max" value="10.0" />
+            <param name="use_inf" value="true" />
+            <remap from="cloud_in" to="$(var pointcloud_topic)" />
+            <remap from="scan" to="/scan_depth" />
+        </node>
+    </group>
+
+    <!-- Merge lidar + depth scan (disable when depth scan disabled) -->
+    <group if="$(var use_depth_scan)">
+        <node pkg="maya_bringup" exec="scan_merge.py" name="scan_merger" output="screen">
+            <param name="scan_topic_1" value="/scan_fixed" />
+            <param name="scan_topic_2" value="/scan_depth" />
+            <param name="output_topic" value="/scan_merged" />
+            <param name="frame_id" value="base_footprint" />
+        </node>
+    </group>
+
+    <!-- EKF (disable when IMU disabled) -->
+    <group if="$(var use_ekf)">
+        <group if="$(var use_vslam_odom_fusion)">
+            <group if="$(var use_imu_sanitizer)">
+                <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+                    <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
+                    <param from="$(find-pkg-share maya_bringup)/config/ekf_vslam_pose.yaml" />
+                    <param name="odom0" value="$(var odom_topic)" />
+                    <param name="odom1" value="$(var vslam_odom_base_topic)" />
+                    <param name="imu0" value="$(var sanitized_imu_topic)" />
+                    <param name="use_sim_time" value="$(var use_sim_time)" />
+                </node>
+            </group>
+            <group unless="$(var use_imu_sanitizer)">
+                <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+                    <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
+                    <param from="$(find-pkg-share maya_bringup)/config/ekf_vslam_pose.yaml" />
+                    <param name="odom0" value="$(var odom_topic)" />
+                    <param name="odom1" value="$(var vslam_odom_base_topic)" />
+                    <param name="imu0" value="$(var imu_topic)" />
+                    <param name="use_sim_time" value="$(var use_sim_time)" />
+                </node>
+            </group>
+        </group>
+        <group unless="$(var use_vslam_odom_fusion)">
+            <group if="$(var use_imu_sanitizer)">
+                <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+                    <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
+                    <param name="odom0" value="$(var odom_topic)" />
+                    <param name="imu0" value="$(var sanitized_imu_topic)" />
+                    <param name="use_sim_time" value="$(var use_sim_time)" />
+                </node>
+            </group>
+            <group unless="$(var use_imu_sanitizer)">
+                <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node" output="screen">
+                    <param from="$(find-pkg-share maya_bringup)/config/ekf.yaml" />
+                    <param name="odom0" value="$(var odom_topic)" />
+                    <param name="imu0" value="$(var imu_topic)" />
+                    <param name="use_sim_time" value="$(var use_sim_time)" />
+                </node>
+            </group>
+        </group>
+    </group>
+
+    <!-- Nav2 -->
+    <group if="$(var use_nav2)">
+        <include file="$(find-pkg-share nav2_bringup)/launch/bringup_launch.py">
+            <arg name="use_sim_time" value="$(var use_sim_time)" />
+            <arg name="slam" value="True" />
+            <arg name="autostart" value="True" />
+            <arg name="use_composition" value="False" />
+            <arg name="map" value="$(var map)" />
+            <arg name="params_file" value="$(find-pkg-share maya_bringup)/config/nav2_params.yaml" />
+        </include>
+    </group>
+
+    <group if="$(var use_gnss_waypoint_controller)">
+        <node pkg="maya_bringup" exec="gnss_waypoint_controller.py" name="gnss_waypoint_controller" output="screen">
+            <param name="target_latitude" value="$(var gnss_target_latitude)" />
+            <param name="target_longitude" value="$(var gnss_target_longitude)" />
+            <param name="waypoints" value="$(var gnss_waypoints)" />
+            <param name="goal_radius_m" value="$(var gnss_goal_radius_m)" />
+            <param name="max_linear_speed_mps" value="$(var gnss_max_linear_speed_mps)" />
+            <param name="max_angular_speed_radps" value="$(var gnss_max_angular_speed_radps)" />
+            <param name="initial_compass_heading_deg" value="$(var gnss_initial_compass_heading_deg)" />
+            <param name="yaw_offset_rad" value="$(var gnss_yaw_offset_rad)" />
+            <param name="allow_odom_yaw_as_enu" value="$(var gnss_allow_odom_yaw_as_enu)" />
+            <param name="auto_yaw_calibration" value="$(var gnss_auto_yaw_calibration)" />
+            <param name="auto_yaw_calibration_min_gnss_m" value="$(var gnss_auto_yaw_calibration_min_gnss_m)" />
+            <param name="auto_yaw_calibration_min_odom_m" value="$(var gnss_auto_yaw_calibration_min_odom_m)" />
+            <param name="auto_yaw_calibration_max_correction_rad" value="$(var gnss_auto_yaw_calibration_max_correction_rad)" />
+            <param name="gnss_topic" value="/sensors/gnss/fix" />
+            <param name="odom_topic" value="/odometry/filtered" />
+            <param name="cmd_vel_topic" value="/cmd_vel" />
+            <param name="mode_topic" value="/mode" />
+            <param name="status_topic" value="/gnss_waypoint/status" />
+            <param name="goal_reached_mode_value" value="2" />
+            <param name="normal_mode_value" value="1" />
+            <param name="goal_reached_mode_hold_s" value="$(var gnss_goal_reached_mode_hold_s)" />
+            <param name="goal_reached_required_samples" value="$(var gnss_goal_reached_required_samples)" />
+            <param name="waypoint_timeout_s" value="$(var gnss_waypoint_timeout_s)" />
+            <param name="no_progress_timeout_s" value="$(var gnss_no_progress_timeout_s)" />
+            <param name="no_progress_min_delta_m" value="$(var gnss_no_progress_min_delta_m)" />
+        </node>
+    </group>
+
+    <!-- RViz -->
+    <group if="$(var rviz)">
+        <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_path)" />
+    </group>
+</launch>
