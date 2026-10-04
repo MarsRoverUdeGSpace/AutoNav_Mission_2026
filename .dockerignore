@@ -1,0 +1,7 @@
+# The image installs dependencies from package manifests only; source is bind-mounted.
+.git
+build
+install
+log
+.env.autonav*
+**/*.STL

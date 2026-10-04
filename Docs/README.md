@@ -9,6 +9,8 @@ This repository contains the **Autonomous Navigation Mission** stack for rover *
 It implements a ROS 2–based perception → planning → control pipeline that uses LiDAR, ZED camera, GNSS, IMU and MCU telemetry to navigate up to 2 km, reach GNSS/visual/object targets within competition tolerances, and report status to operators.  
 Development is done simulation-first (Gazebo/Ignition) and then transferred to the real rover for field testing.
 
+For the Ubuntu 24.04 + ROS 2 Jazzy GUI container setup on Ubuntu or Fedora, see [Docker teammate setup](docker-setup.md). The [v1.0.0 withdrawal and 2027 handoff](release-withdrawal-and-2027-handoff.md) records the restored branch history and current verification limits.
+
 ---
 
 ```mermaid

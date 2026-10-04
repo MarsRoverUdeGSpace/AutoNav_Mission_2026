@@ -1,0 +1,36 @@
+# Ubuntu 24.04 desktop: run tools/prepare_gui_env.sh before Compose.
+# The image contains dependencies; the host checkout provides source and build outputs.
+name: autonav-mission-2026
+services:
+  jazzy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: autonav-jazzy:local
+    init: true
+    command: ["sleep", "infinity"]
+    user: "${AUTONAV_UID:?Run tools/prepare_gui_env.sh}:${AUTONAV_GID:?Run tools/prepare_gui_env.sh}"
+    group_add:
+      - "${AUTONAV_RENDER_GID:?Run tools/prepare_gui_env.sh}"
+    working_dir: /workspace/AutoNav_Mission_2026
+    environment:
+      HOME: /tmp
+      DISPLAY: "${AUTONAV_DISPLAY:?Run tools/prepare_gui_env.sh}"
+      XAUTHORITY: /tmp/.Xauthority
+      QT_QPA_PLATFORM: xcb
+      GZ_SIM_RESOURCE_PATH: /workspace
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace/AutoNav_Mission_2026
+      - type: bind
+        source: /tmp/.X11-unix
+        target: /tmp/.X11-unix
+        read_only: true
+      - type: bind
+        source: "${AUTONAV_XAUTHORITY:?Run tools/prepare_gui_env.sh}"
+        target: /tmp/.Xauthority
+        read_only: true
+    devices:
+      - "${AUTONAV_RENDER_NODE:?Run tools/prepare_gui_env.sh}:/dev/dri/renderD128"
+    shm_size: 1gb

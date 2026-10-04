@@ -1,0 +1,5 @@
+# Optional for Fedora hosts with enforcing SELinux; do not enable on Ubuntu.
+services:
+  jazzy:
+    security_opt:
+      - label=disable

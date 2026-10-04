@@ -123,6 +123,8 @@ gzclient.log
 # Temporary data dumps / scratch
 tmp/
 temp/
+# Local Docker Compose display/device selection (the X11 cookie stays in XDG_RUNTIME_DIR)
+.env.autonav*
 .codex
 *.bak
 *.old
